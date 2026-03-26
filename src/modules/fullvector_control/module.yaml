@@ -1,0 +1,329 @@
+# src/modules/fullvector_control/module.yaml
+module_name: fullvector_control
+
+parameters:
+  - group: Demo
+    definitions:
+      PRINT_A_EN:
+        type: int32
+        default: 1
+        min: 0
+        max: 1
+        description:
+            short: Print Message A Enable
+            long: |
+                Enable printing of message A.
+                When set to 1, prints the numerical value.
+                When set to 0, prints "hello jone".
+
+      PRINT_NUM_VALUE:
+        type: float
+        default: 0.8
+        decimal: 2
+        min: 0.2
+        max: 1.0
+        unit: s
+        description:
+            short: Print Number Value
+            long: |
+                Numerical value to be printed when PRINT_A_EN is enabled.
+                This value is displayed with the message.
+
+
+  - group: Fullvector Control
+    definitions:
+      FV_POS_P_X:
+        type: float
+        default: 0.2
+        decimal: 3
+        min: 0.0
+        max: 10.0
+        description:
+          short: Position control gain (X-axis)
+          long: |
+            Position proportional gain for X-axis control.
+            Higher values increase position tracking responsiveness but may cause instability.
+
+      FV_POS_P_Y:
+        type: float
+        default: 0.2
+        decimal: 3
+        min: 0.0
+        max: 10.0
+        description:
+          short: Position control gain (Y-axis)
+          long: |
+            Position proportional gain for Y-axis control.
+            Higher values increase position tracking responsiveness but may cause instability.
+
+      FV_POS_P_Z:
+        type: float
+        default: 0.8
+        decimal: 3
+        min: 0.0
+        max: 10.0
+        description:
+          short: Position control gain (Z-axis)
+          long: |
+            Position proportional gain for Z-axis control.
+            Higher values increase position tracking responsiveness but may cause instability.
+
+      FV_VEL_P_X:
+        type: float
+        default: 0.2
+        decimal: 3
+        min: 0.0
+        max: 10.0
+        description:
+          short: Velocity control gain (X-axis)
+          long: |
+            Velocity proportional gain for X-axis control.
+            Higher values increase velocity tracking responsiveness but may cause instability.
+
+      FV_VEL_P_Y:
+        type: float
+        default: 0.2
+        decimal: 3
+        min: 0.0
+        max: 10.0
+        description:
+          short: Velocity control gain (Y-axis)
+          long: |
+            Velocity proportional gain for Y-axis control.
+            Higher values increase velocity tracking responsiveness but may cause instability.
+
+      FV_VEL_P_Z:
+        type: float
+        default: 1.0
+        decimal: 3
+        min: 0.0
+        max: 10.0
+        description:
+          short: Velocity control gain (Z-axis)
+          long: |
+            Velocity proportional gain for Z-axis control.
+            Higher values increase velocity tracking responsiveness but may cause instability.
+
+      FV_ATT_P_X:
+        type: float
+        default: 0.2
+        decimal: 3
+        min: 0.0
+        max: 10.0
+        description:
+          short: Attitude proportional gain (X-axis)
+          long: |
+            Attitude proportional gain for X-axis (roll) control.
+            Higher values increase attitude tracking responsiveness but may cause instability.
+
+      FV_ATT_P_Y:
+        type: float
+        default: 0.2
+        decimal: 3
+        min: 0.0
+        max: 10.0
+        description:
+          short: Attitude proportional gain (Y-axis)
+          long: |
+            Attitude proportional gain for Y-axis (pitch) control.
+            Higher values increase attitude tracking responsiveness but may cause instability.
+
+      FV_ATT_P_Z:
+        type: float
+        default: 0.2
+        decimal: 3
+        min: 0.0
+        max: 10.0
+        description:
+          short: Attitude proportional gain (Z-axis)
+          long: |
+            Attitude proportional gain for Z-axis (yaw) control.
+            Higher values increase attitude tracking responsiveness but may cause instability.
+
+      FV_ANG_VEL_P_X:
+        type: float
+        default: 0.2
+        decimal: 3
+        min: 0.0
+        max: 10.0
+        description:
+          short: Angular velocity proportional gain (X-axis)
+          long: |
+            Angular velocity proportional gain for X-axis control.
+            Higher values increase angular velocity tracking responsiveness but may cause instability.
+
+      FV_ANG_VEL_P_Y:
+        type: float
+        default: 0.2
+        decimal: 3
+        min: 0.0
+        max: 10.0
+        description:
+          short: Angular velocity proportional gain (Y-axis)
+          long: |
+            Angular velocity proportional gain for Y-axis control.
+            Higher values increase angular velocity tracking responsiveness but may cause instability.
+
+      FV_ANG_VEL_P_Z:
+        type: float
+        default: 0.2
+        decimal: 3
+        min: 0.0
+        max: 10.0
+        description:
+          short: Angular velocity proportional gain (Z-axis)
+          long: |
+            Angular velocity proportional gain for Z-axis control.
+            Higher values increase angular velocity tracking responsiveness but may cause instability.
+
+      FV_ANG_VEL_D_X:
+        type: float
+        default: 1.0
+        decimal: 3
+        min: 0.0
+        max: 2.0
+        description:
+          short: Angular velocity derivative gain (X-axis)
+          long: |
+            Angular velocity derivative gain for X-axis control.
+            Helps dampen angular velocity oscillations.
+
+      FV_ANG_VEL_D_Y:
+        type: float
+        default: 0.2
+        decimal: 3
+        min: 0.0
+        max: 2.0
+        description:
+          short: Angular velocity derivative gain (Y-axis)
+          long: |
+            Angular velocity derivative gain for Y-axis control.
+            Helps dampen angular velocity oscillations.
+
+      FV_ANG_VEL_D_Z:
+        type: float
+        default: 0.2
+        decimal: 3
+        min: 0.0
+        max: 2.0
+        description:
+          short: Angular velocity derivative gain (Z-axis)
+          long: |
+            Angular velocity derivative gain for Z-axis control.
+            Helps dampen angular velocity oscillations.
+
+      FV_MASS:
+        type: float
+        default: 1.0
+        unit: kg
+        decimal: 2
+        min: 0.1
+        max: 50.0
+        description:
+          short: Vehicle mass
+          long: |
+            Mass of the vehicle for control calculations.
+            Used to compute thrust required for acceleration.
+
+      FV_INERTIA_XX:
+        type: float
+        default: 0.01
+        unit: kg m^2
+        decimal: 4
+        min: 0.001
+        max: 10.0
+        description:
+          short: Inertia around X-axis
+          long: |
+            Moment of inertia around the X-axis (roll) for control calculations.
+            Affects roll dynamics and control response.
+
+      FV_INERTIA_YY:
+        type: float
+        default: 0.01
+        unit: kg m^2
+        decimal: 4
+        min: 0.001
+        max: 10.0
+        description:
+          short: Inertia around Y-axis
+          long: |
+            Moment of inertia around the Y-axis (pitch) for control calculations.
+            Affects pitch dynamics and control response.
+
+      FV_INERTIA_ZZ:
+        type: float
+        default: 0.02
+        unit: kg m^2
+        decimal: 4
+        min: 0.001
+        max: 10.0
+        description:
+          short: Inertia around Z-axis
+          long: |
+            Moment of inertia around the Z-axis (yaw) for control calculations.
+            Affects yaw dynamics and control response.
+
+      FV_TARGET_X:
+        type: float
+        default: 0.0
+        decimal: 3
+        min: -100.0
+        max: 100.0
+        unit: m
+        description:
+          short: Fallback target X (NED local)
+          long: |
+            Fallback X position setpoint used when no external trajectory_setpoint
+            is received.
+
+      FV_TARGET_Y:
+        type: float
+        default: 0.0
+        decimal: 3
+        min: -100.0
+        max: 100.0
+        unit: m
+        description:
+          short: Fallback target Y (NED local)
+          long: |
+            Fallback Y position setpoint used when no external trajectory_setpoint
+            is received.
+
+      FV_TARGET_Z:
+        type: float
+        default: -3.0
+        decimal: 3
+        min: -100.0
+        max: 100.0
+        unit: m
+        description:
+          short: Fallback target Z (NED local)
+          long: |
+            Fallback Z position setpoint used when no external trajectory_setpoint
+            is received.
+
+      FV_ENABLE:
+        type: int32
+        default: 1
+        min: 0
+        max: 1
+        description:
+          short: Enable fullvectormetric control output
+          long: |
+            Enable/disable fullvectormetric control output publishing.
+            Control output is published only when this parameter is enabled,
+            the vehicle is armed, and position control is active.
+
+      FV_USE_TRAJ_SP:
+        type: int32
+        default: 0
+        min: 0
+        max: 1
+        description:
+          short: Use trajectory_setpoint as target source
+          long: |
+            Select target source for fullvector_control.
+            0: Use FV_TARGET_X/Y/Z fallback target.
+            1: Use external trajectory_setpoint when available.
+

@@ -1,0 +1,12 @@
+menuconfig MODULES_FULLVECTOR_CONTROL
+	bool "fullvector_control"
+	default n
+	---help---
+		Enable support for fullvector_control module with GeoMath library
+
+menuconfig USER_FULLVECTOR_CONTROL
+	bool "fullvector_control running as userspace module"
+	default y
+	depends on BOARD_PROTECTED && MODULES_FULLVECTOR_CONTROL
+	---help---
+		Put fullvector_control in userspace memory

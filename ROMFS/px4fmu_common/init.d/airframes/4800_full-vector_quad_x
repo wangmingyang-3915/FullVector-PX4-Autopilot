@@ -1,0 +1,65 @@
+#!/bin/sh
+#
+# @name Full-vector Quadrotor
+#
+# @type Quadrotor x
+# @class Copter
+# @output MAIN3 left front motor (1)
+# @output MAIN2 left rear motor (2) 
+# @output MAIN4 right rear motor (3)
+# @output MAIN1 right front motor (4)
+# @output AUX3 left front tilt servo (5)
+# @output AUX2 left rear tilt servo (6)
+# @output AUX4 right rear tilt servo (7)
+# @output AUX1 right front tilt servo (8)
+# @maintainer Mingyang Wang <3112311639@qq.com>
+#
+#
+
+# 加载多旋翼默认配置
+. ${R}etc/init.d/rc.mc_defaults
+
+# X型四旋翼电机位置及参数设置
+param set-default CA_ROTOR_COUNT 4 #电机数量
+param set-default CA_ROTOR0_PX -sqrt(2.0) / 2 * 0.225
+param set-default CA_ROTOR0_PY sqrt(2.0) / 2 * 0.225
+param set-default CA_ROTOR0_KF 1.105e-05 #推力系数
+param set-default CA_ROTOR0_KM 1.779e-07 * 2 #力矩系数
+param set-default CA_ROTOR1_PX -sqrt(2.0)/ 2 * 0.225
+param set-default CA_ROTOR1_PY -sqrt(2.0) / 2 * 0.225
+param set-default CA_ROTOR1_KF 1.105e-05
+param set-default CA_ROTOR1_KM -1.779e-07 * 2
+param set-default CA_ROTOR2_PX sqrt(2.0) / 2 * 0.225
+param set-default CA_ROTOR2_PY -sqrt(2.0) / 2 * 0.225
+param set-default CA_ROTOR2_KF 1.105e-05
+param set-default CA_ROTOR2_KM 1.779e-07 * 2 
+param set-default CA_ROTOR3_PX sqrt(2.0) / 2 * 0.225
+param set-default CA_ROTOR3_PY sqrt(2.0) / 2 * 0.225
+param set-default CA_ROTOR3_KF 1.105e-05
+param set-default CA_ROTOR3_KM -1.779e-07 * 2
+
+#设置混控器
+set MIXER Full-vector Quadrotor
+set PWM_OUT 12345678 #PWM输出通道数量
+set PWM_RATE 50 #PWM输出频率
+set PWM_MIN 1000 #PWM最小值
+set PWM_MAX 2000 #PWM最大值
+
+#舵机通道映射
+set SERVO_TILT_RL 5 #左前舵机通道（1）
+set SERVO_TILT_RR 6 #左后舵机通道（2）
+set SERVO_TILT_FR 7 #右后舵机通道（3）
+set SERVO_TILT_FL 8 #右前舵机通道（4）
+
+# 倾转角度限制（度）
+set CA_SV_CS0_SCALE 45  # 左前舵机最大角度
+set CA_SV_CS1_SCALE 45  # 左后舵机最大角度
+set CA_SV_CS2_SCALE 45  # 右后舵机最大角度  
+set CA_SV_CS3_SCALE 45  # 右前舵机最大角度
+
+# 控制分配配置
+set CA_ROTOR_COUNT 4 #电机数量
+set CA_SV_COUNT 4 #舵机数量
+
+# 使用多旋翼控制分配
+set CA_AIRFRAME 10  # 自定义倾转四旋翼类型
