@@ -257,46 +257,6 @@ void FullvectorControl::Run()
 		PX4_INFO("debug value=%.3f", (double)_param_print_num_value.get());
 	}
 
-	vehicle_thrust_setpoint_s thrust_feedback{};
-	const bool thrust_updated = _vehicle_thrust_setpoint_sub.update(&thrust_feedback);
-
-	actuator_motors_s actuator_motors{};
-	const bool motors_updated = _actuator_motors_sub.update(&actuator_motors);
-
-	if (allow_debug_print && (thrust_updated || motors_updated)) {
-		if (thrust_updated) {
-			PX4_INFO("[ThrustSub] thrust_sp=[%.3f, %.3f, %.3f] upward=%.3f",
-			       (double)thrust_feedback.xyz[0],
-			       (double)thrust_feedback.xyz[1],
-			       (double)thrust_feedback.xyz[2],
-			       (double)(-thrust_feedback.xyz[2]));
-		}
-
-		if (motors_updated) {
-			PX4_INFO("[MotorOut] m1=%.3f m2=%.3f m3=%.3f m4=%.3f",
-			       (double)actuator_motors.control[0],
-			       (double)actuator_motors.control[1],
-			       (double)actuator_motors.control[2],
-			       (double)actuator_motors.control[3]);
-		}
-	}
-
-	// Diagnostic: check takeoff and land detection status
-	takeoff_status_s takeoff_status{};
-	vehicle_land_detected_s land_detected{};
-	_takeoff_status_sub.update(&takeoff_status);
-	_vehicle_land_detected_sub.update(&land_detected);
-
-	if (allow_debug_print) {
-		PX4_INFO("[FlightState] takeoff_state=%d landed=%d ground_contact=%d pos=[%.2f %.2f %.2f] vel=[%.2f %.2f %.2f]",
-			 (int)takeoff_status.takeoff_state,
-			 (int)land_detected.landed,
-			 (int)land_detected.ground_contact,
-			 (double)_current_state.position(0), (double)_current_state.position(1), (double)_current_state.position(2),
-			 (double)_current_state.velocity(0), (double)_current_state.velocity(1), (double)_current_state.velocity(2));
-		_last_debug_print_time = now;
-	}
-
 	// 1. 执行位置控制
 	PositionControl(_current_state, _current_command, _dt);
 
@@ -305,6 +265,37 @@ void FullvectorControl::Run()
 
 	// 3. 执行力与力矩分配计算函数（其中包括电机角速度与偏移角计算）
 	controlAllocation(_current_state, _current_command);
+
+	if (allow_debug_print) {
+		// 诊断飞行状态机
+		takeoff_status_s takeoff_status{};
+		vehicle_land_detected_s land_detected{};
+		_takeoff_status_sub.update(&takeoff_status);
+		_vehicle_land_detected_sub.update(&land_detected);
+
+		// 位置控制观测量
+		PX4_INFO("[PosObs] vel=[%.2f %.2f %.2f] acc_sp=[%.2f %.2f %.2f]",
+			 (double)_current_state.velocity(0), (double)_current_state.velocity(1), (double)_current_state.velocity(2),
+			 (double)_pos_acc_cmd(0), (double)_pos_acc_cmd(1), (double)_pos_acc_cmd(2));
+
+		// 姿态控制观测量
+		PX4_INFO("[AttObs] omega=[%.2f %.2f %.2f] ang_acc_sp=[%.2f %.2f %.2f]",
+			 (double)_current_state.angular_velocity(0), (double)_current_state.angular_velocity(1), (double)_current_state.angular_velocity(2),
+			 (double)_att_ang_acc_cmd(0), (double)_att_ang_acc_cmd(1), (double)_att_ang_acc_cmd(2));
+
+		// 控制分配观测量
+		PX4_INFO("[AllocObs] motor=[%.1f %.1f %.1f %.1f] alpha=[%.3f %.3f %.3f %.3f]",
+			 (double)motor_1, (double)motor_2, (double)motor_3, (double)motor_4,
+			 (double)alpha_offset1, (double)alpha_offset2, (double)alpha_offset3, (double)alpha_offset4);
+
+		PX4_INFO("[FlightState] takeoff_state=%d landed=%d ground_contact=%d pos=[%.2f %.2f %.2f]",
+			 (int)takeoff_status.takeoff_state,
+			 (int)land_detected.landed,
+			 (int)land_detected.ground_contact,
+			 (double)_current_state.position(0), (double)_current_state.position(1), (double)_current_state.position(2));
+
+		_last_debug_print_time = now;
+	}
 
 	 perf_end(_loop_perf);
 
