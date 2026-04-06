@@ -42,60 +42,44 @@
 #pragma once
 
 #include <drivers/drv_hrt.h>
-#include <lib/mathlib/math/WelfordMean.hpp>
 #include <lib/perf/perf_counter.h>
-#include <lib/systemlib/mavlink_log.h>
-#include <px4_platform_common/px4_config.h>
 #include <px4_platform_common/defines.h>
 #include <px4_platform_common/module.h>
 #include <px4_platform_common/module_params.h>
 #include <px4_platform_common/px4_work_queue/ScheduledWorkItem.hpp>
-#include <px4_platform_common/px4_work_queue/WorkItem.hpp>
-#include <px4_platform_common/px4_work_queue/WorkQueue.hpp>
-#include <px4_platform_common/posix.h>
-#include <px4_platform_common/tasks.h>
 #include <lib/mathlib/mathlib.h>
 #include <px4_platform_common/log.h>
-#include <lib/mathlib/mathlib.h>
 #include <matrix/matrix/math.hpp>
 
 
 #include <uORB/Subscription.hpp>
 #include <uORB/Publication.hpp>
-#include <uORB/SubscriptionCallback.hpp>
 
 // Subscriptions
 #include <uORB/topics/vehicle_local_position.h>
-#include <uORB/topics/vehicle_euler_attitude.h>
+#include <uORB/topics/vehicle_attitude.h>
 #include <uORB/topics/vehicle_angular_velocity.h>
 #include <uORB/topics/vehicle_control_mode.h>
 #include <uORB/topics/parameter_update.h>
-#include <uORB/topics/vehicle_status.h>
-#include <uORB/topics/trajectory_setpoint.h>
 #include <uORB/topics/vehicle_thrust_setpoint.h>
-#include <uORB/topics/vehicle_torque_setpoint.h>
+#include <uORB/topics/vehicle_local_position_setpoint.h>
+#include <uORB/topics/vehicle_angular_acceleration_setpoint.h>
 #include <uORB/topics/takeoff_status.h>
 #include <uORB/topics/vehicle_land_detected.h>
 
 // Publications
-#include <uORB/topics/vehicle_thrust_setpoint.h>
-#include <uORB/topics/vehicle_torque_setpoint.h>
 #include <uORB/topics/actuator_motors.h>
+#include <uORB/topics/actuator_servos.h>
 
 using namespace time_literals;
 using namespace matrix;
 
-struct ControlOutputs {
-	Vector3f thrust;			// 总推力
-	Vector3f moment;			// 控制力矩
-};
-
-// 无人机状态结构体
+// 主机无人机状态结构体
 struct UAVStates {
 	Vector3f position;			// 位置
 	Vector3f velocity;                      // 速度
-	Vector3f Euler_angle;                   // 欧拉角
-	Matrix3f attitude;                      // 姿态旋转矩阵（由欧拉角转换）
+	Vector3f Euler_angles;          	// 欧拉角（roll, pitch, yaw）
+	Quatf attitude;                         // 四元数姿态
 	Vector3f angular_velocity;              // 角速度
 };
 
@@ -104,11 +88,8 @@ struct UAVCommand {
     	Vector3f position;			// 期望位置
 	Vector3f velocity;                      // 期望速度
 	Vector3f acceleration;                  // 期望加速度
-	Vector3f Euler_angle;                   // 期望欧拉角
+	Vector3f Euler_angles;          	// 期望欧拉角（roll, pitch, yaw）
 	Vector3f angular_velocity;              // 期望角速度
-	Matrix3f R_D_prev{};                    // 上一时刻期望旋转矩阵
-	Matrix3f R_D_dot_prev{};                // 上一时刻期望旋转矩阵导数
-	Vector3f Omega_D_prev{};                // 上一时刻期望角速度
 };
 
 class FullvectorControl : public ModuleBase<FullvectorControl>, public ModuleParams,
@@ -133,19 +114,18 @@ public:
 	 * Execute geometric position control
 	 * @param state current UAV state
 	 * @param command desired command
-	 * @param control_outputs output control signals
 	 */
-	void PositionControl(const UAVStates & state, const UAVCommand & command, ControlOutputs & control_outputs);
+	void PositionControl(const UAVStates & state, const UAVCommand & command, const float dt);
 
 	/**
 	 * Execute geometric attitude control
 	 * @param state current UAV state
 	 * @param command desired command
-	 * @param control_outputs output control signals
 	 */
-	void AttitudeControl(const UAVStates & state, UAVCommand & command, ControlOutputs & control_outputs);
+	void AttitudeControl(const UAVStates & state, UAVCommand & command, const float dt);
 
-	void calculateMotorAngleOffset(const UAVStates & state, const UAVCommand & command);
+	void calculateMotorAngleOffset(const UAVCommand & command);
+	void controlAllocation(const UAVStates & state, const UAVCommand & command);
 
 private:
 	void Run() override;
@@ -164,7 +144,6 @@ private:
 
 	DEFINE_PARAMETERS(
 		(ParamInt<px4::params::FV_ENABLE>) _param_fv_enable,
-		(ParamInt<px4::params::FV_USE_TRAJ_SP>) _param_fv_use_traj_sp,
 		(ParamInt<px4::params::PRINT_A_EN>) _param_print_msg_a_en,
 		(ParamFloat<px4::params::PRINT_NUM_VALUE>) _param_print_num_value,
 		(ParamFloat<px4::params::FV_POS_P_X>)             _param_fv_pos_p_x,
@@ -204,6 +183,7 @@ private:
 		(ParamFloat<px4::params::FV_ANG_VEL_D_Y>)         _param_fv_ang_vel_d_y,
 		(ParamFloat<px4::params::FV_ANG_VEL_D_Z>)         _param_fv_ang_vel_d_z,
 		(ParamFloat<px4::params::FV_MASS>)                _param_fv_mass,
+		(ParamFloat<px4::params::FV_GRAVITY>)             _param_fv_gravity,
 		(ParamFloat<px4::params::FV_MOTOR_DISTANCE>)      _param_fv_motor_distance,
 		(ParamFloat<px4::params::FV_K_F>)		  _param_fv_K_F,
 		(ParamFloat<px4::params::FV_K_M>)		  _param_fv_K_M,
@@ -222,16 +202,16 @@ private:
 	)
 
 	// Publications
-	uORB::Publication<vehicle_thrust_setpoint_s> _vehicle_thrust_setpoint_pub{ORB_ID(vehicle_thrust_setpoint)};
-	uORB::Publication<vehicle_torque_setpoint_s> _vehicle_torque_setpoint_pub{ORB_ID(vehicle_torque_setpoint)};
+	uORB::Publication<vehicle_local_position_setpoint_s> _position_controller_output_pub{ORB_ID(vehicle_local_position_setpoint)};
+	uORB::Publication<vehicle_angular_acceleration_setpoint_s> _attitude_controller_output_pub{ORB_ID(vehicle_angular_acceleration_setpoint)};
+	uORB::Publication<actuator_servos_s> _motor_tilt_pub{ORB_ID(actuator_servos)};
+	uORB::Publication<actuator_motors_s> _motor_speed_pub{ORB_ID(actuator_motors)};
 
 	// Subscriptions
 	uORB::Subscription _vehicle_local_position_sub{ORB_ID(vehicle_local_position)};
-	uORB::Subscription _vehicle_euler_attitude_sub{ORB_ID(vehicle_euler_attitude)};
+	uORB::Subscription _vehicle_attitude_sub{ORB_ID(vehicle_attitude)};
 	uORB::Subscription _vehicle_angular_velocity_sub{ORB_ID(vehicle_angular_velocity)};
 	uORB::Subscription _vehicle_control_mode_sub{ORB_ID(vehicle_control_mode)};
-	uORB::Subscription _vehicle_status_sub{ORB_ID(vehicle_status)};
-	uORB::Subscription _trajectory_setpoint_sub{ORB_ID(trajectory_setpoint)};
 	uORB::SubscriptionInterval _parameter_update_sub{ORB_ID(parameter_update), 1_s};
 	uORB::Subscription _vehicle_thrust_setpoint_sub{ORB_ID(vehicle_thrust_setpoint)};
 	uORB::Subscription _actuator_motors_sub{ORB_ID(actuator_motors)};
@@ -240,16 +220,9 @@ private:
 
 	// State variables
 	vehicle_local_position_s _position{};
-	vehicle_euler_attitude_s _attitude_euler{};
+	vehicle_attitude_s _attitude{};
     	vehicle_angular_velocity_s _angular_velocity{};
 	vehicle_control_mode_s _control_mode{};
-	vehicle_status_s _vehicle_status{};
-	trajectory_setpoint_s _trajectory_setpoint{};
-	vehicle_thrust_setpoint_s _setpoint_thrust{};
-
-	bool _armed{false};
-	float printNumValue;
-	bool printMsgAEnable;
 
 	// PID 参数矩阵
 	Matrix3f gain_pos_pid{};
@@ -258,15 +231,13 @@ private:
 	Matrix3f gain_ang_vel_pid{};
 
 	float mass;	//飞行器总质量
+	float gravity;	//重力加速度
 	float distance;	//电机距离机体中心距离
 	float K_F;	//电机拉力系数
 	float K_M;	//电机力矩系数
 	float J_RP; 	//整个电机转子和螺旋桨绕转轴的总转动惯量
 
 	Matrix3f inertia; // 惯性矩阵
-
-	float _hover_thrust{0.5f};
-	float _max_thrust{1.0f};
 
 	// 时间相关
 	hrt_abstime _last_run_time{0};       	// 上次运行时间
@@ -277,5 +248,30 @@ private:
 	UAVStates _prev_state;			// 上一时刻无人机状态
 	UAVCommand _current_command;		// 当前无人机指令
 	hrt_abstime _last_external_setpoint_time{0};
-	ControlOutputs ctrl_outputs;	    	// 其他成员变量
+
+	Vector3f _pos_acc_cmd{};		// 位置控制器输出
+	Vector3f _att_ang_acc_cmd{};		// 姿态控制器输出
+
+	float alpha_offset1{0.0f};
+	float alpha_offset2{0.0f};
+	float alpha_offset3{0.0f};
+	float alpha_offset4{0.0f};
+	float motor_1{0.0f};
+	float motor_2{0.0f};
+	float motor_3{0.0f};
+	float motor_4{0.0f};
+
+	// 串级PID中间状态：外环位置、内环速度
+	Vector3f _pos_error_int{};
+	Vector3f _pos_error_prev{};
+	Vector3f _vel_error_int{};
+	Vector3f _vel_error_prev{};
+	bool _pid_state_initialized{false};
+
+	// 串级PID中间状态：外环姿态、内环角速度
+	Vector3f _att_error_int{};
+	Vector3f _att_error_prev{};
+	Vector3f _ang_vel_error_int{};
+	Vector3f _ang_vel_error_prev{};
+	bool _att_pid_state_initialized{false};
 };
