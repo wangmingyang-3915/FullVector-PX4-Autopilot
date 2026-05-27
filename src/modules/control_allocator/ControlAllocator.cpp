@@ -61,6 +61,8 @@ ControlAllocator::ControlAllocator() :
 	_actuator_servos_pub.advertise();
 	_actuator_servos_trim_pub.advertise();
 
+	_param_fv_enable_handle = param_find("FV_ENABLE");
+
 	for (int i = 0; i < MAX_NUM_MOTORS; ++i) {
 		char buffer[17];
 		snprintf(buffer, sizeof(buffer), "CA_R%u_SLEW", i);
@@ -111,6 +113,10 @@ void
 ControlAllocator::parameters_updated()
 {
 	_has_slew_rate = false;
+
+	if (_param_fv_enable_handle != PARAM_INVALID) {
+		param_get(_param_fv_enable_handle, &_fv_enable);
+	}
 
 	for (int i = 0; i < MAX_NUM_MOTORS; ++i) {
 		param_get(_param_handles.slew_rate_motors[i], &_params.slew_rate_motors[i]);
@@ -637,6 +643,10 @@ ControlAllocator::publish_control_allocator_status(int matrix_index)
 void
 ControlAllocator::publish_actuator_controls()
 {
+	if (_fv_enable == 1) {
+		return;
+	}
+
 	actuator_motors_s actuator_motors;
 	actuator_motors.timestamp = hrt_absolute_time();
 	actuator_motors.timestamp_sample = _timestamp_sample;

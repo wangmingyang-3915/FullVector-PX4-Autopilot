@@ -204,6 +204,8 @@ private:
 	ParamHandles _param_handles{};
 	Params _params{};
 	bool _has_slew_rate{false};
+	param_t _param_fv_enable_handle{PARAM_INVALID};
+	int32_t _fv_enable{0};
 
 	DEFINE_PARAMETERS(
 		(ParamInt<px4::params::CA_AIRFRAME>) _param_ca_airframe,

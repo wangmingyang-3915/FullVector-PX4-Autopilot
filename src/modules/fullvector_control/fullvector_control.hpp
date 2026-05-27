@@ -198,17 +198,12 @@ private:
 		(ParamFloat<px4::params::FV_TARGET_Z>)		  _param_fv_target_z,
 		(ParamFloat<px4::params::FV_TARGET_PITCH>)	  _param_fv_target_pitch,
 		(ParamFloat<px4::params::FV_TARGET_YAW>)	  _param_fv_target_yaw,
-		(ParamFloat<px4::params::FV_TARGET_ROLL>)	  _param_fv_target_roll,
-		(ParamFloat<px4::params::MPC_THR_HOVER>)	  _param_mpc_thr_hover,
-		(ParamFloat<px4::params::MPC_THR_MAX>)		  _param_mpc_thr_max
+		(ParamFloat<px4::params::FV_TARGET_ROLL>)	  _param_fv_target_roll
 	)
 
 	// Publications
 	uORB::Publication<vehicle_local_position_setpoint_s> _position_controller_output_pub{ORB_ID(vehicle_local_position_setpoint)};
 	uORB::Publication<vehicle_angular_acceleration_setpoint_s> _attitude_controller_output_pub{ORB_ID(vehicle_angular_acceleration_setpoint)};
-	uORB::Publication<vehicle_local_position_s> _vehicle_local_position_pub{ORB_ID(vehicle_local_position)};
-	uORB::Publication<vehicle_attitude_s> _vehicle_attitude_pub{ORB_ID(vehicle_attitude)};
-	uORB::Publication<vehicle_angular_velocity_s> _vehicle_angular_velocity_pub{ORB_ID(vehicle_angular_velocity)};
 	// NOTE: current integration chain consumes raw motor omega and raw tilt angle directly.
 	// These publishers intentionally send raw physical units (not normalized actuator semantics).
 	uORB::Publication<actuator_servos_s> _motor_tilt_pub_raw{ORB_ID(actuator_servos)};

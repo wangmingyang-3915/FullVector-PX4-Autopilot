@@ -34,7 +34,7 @@ parameters:
     definitions:
       FV_POS_P_X:
         type: float
-        default: 0.2
+        default: 3.0
         decimal: 3
         min: 0.0
         max: 10.0
@@ -46,7 +46,7 @@ parameters:
 
       FV_POS_P_Y:
         type: float
-        default: 0.2
+        default: 3.0
         decimal: 3
         min: 0.0
         max: 10.0
@@ -58,7 +58,7 @@ parameters:
 
       FV_POS_P_Z:
         type: float
-        default: 0.6
+        default: 6.0
         decimal: 3
         min: 0.0
         max: 10.0
@@ -70,7 +70,7 @@ parameters:
 
       FV_POS_I_X:
         type: float
-        default: 0.0
+        default: 0.55
         decimal: 3
         min: 0.0
         max: 10.0
@@ -82,7 +82,7 @@ parameters:
 
       FV_POS_I_Y:
         type: float
-        default: 0.0
+        default: 0.55
         decimal: 3
         min: 0.0
         max: 10.0
@@ -94,7 +94,7 @@ parameters:
 
       FV_POS_I_Z:
         type: float
-        default: 0.0
+        default: 1.5
         decimal: 3
         min: 0.0
         max: 10.0
@@ -106,7 +106,7 @@ parameters:
 
       FV_POS_D_X:
         type: float
-        default: 0.0
+        default: 1.4
         decimal: 3
         min: 0.0
         max: 10.0
@@ -118,7 +118,7 @@ parameters:
 
       FV_POS_D_Y:
         type: float
-        default: 0.0
+        default: 1.4
         decimal: 3
         min: 0.0
         max: 10.0
@@ -130,7 +130,7 @@ parameters:
 
       FV_POS_D_Z:
         type: float
-        default: 0.0
+        default: 5.5
         decimal: 3
         min: 0.0
         max: 10.0
@@ -142,7 +142,7 @@ parameters:
 
       FV_VEL_P_X:
         type: float
-        default: 0.2
+        default: 6.5
         decimal: 3
         min: 0.0
         max: 10.0
@@ -154,7 +154,7 @@ parameters:
 
       FV_VEL_P_Y:
         type: float
-        default: 0.2
+        default: 6.5
         decimal: 3
         min: 0.0
         max: 10.0
@@ -166,9 +166,9 @@ parameters:
 
       FV_VEL_P_Z:
         type: float
-        default: 0.6
+        default: -24.0
         decimal: 3
-        min: 0.0
+        min: -100.0
         max: 10.0
         description:
           short: Velocity control gain (Z-axis)
@@ -178,7 +178,7 @@ parameters:
 
       FV_VEL_I_X:
         type: float
-        default: 0.0
+        default: 0.9
         decimal: 3
         min: 0.0
         max: 10.0
@@ -190,7 +190,7 @@ parameters:
 
       FV_VEL_I_Y:
         type: float
-        default: 0.0
+        default: 0.9
         decimal: 3
         min: 0.0
         max: 10.0
@@ -202,9 +202,9 @@ parameters:
 
       FV_VEL_I_Z:
         type: float
-        default: 0.0
+        default: -2.0
         decimal: 3
-        min: 0.0
+        min: -100.0
         max: 10.0
         description:
           short: Velocity integral gain (Z-axis)
@@ -214,7 +214,7 @@ parameters:
 
       FV_VEL_D_X:
         type: float
-        default: 0.0
+        default: 1.4
         decimal: 3
         min: 0.0
         max: 10.0
@@ -226,7 +226,7 @@ parameters:
 
       FV_VEL_D_Y:
         type: float
-        default: 0.0
+        default: 1.4
         decimal: 3
         min: 0.0
         max: 10.0
@@ -238,9 +238,9 @@ parameters:
 
       FV_VEL_D_Z:
         type: float
-        default: 0.0
+        default: -13.0
         decimal: 3
-        min: 0.0
+        min: -100.0
         max: 10.0
         description:
           short: Velocity derivative gain (Z-axis)
@@ -250,7 +250,7 @@ parameters:
 
       FV_ATT_P_X:
         type: float
-        default: 0.15
+        default: 6.0
         decimal: 3
         min: 0.0
         max: 10.0
@@ -262,7 +262,7 @@ parameters:
 
       FV_ATT_P_Y:
         type: float
-        default: 0.15
+        default: 6.0
         decimal: 3
         min: 0.0
         max: 10.0
@@ -274,10 +274,10 @@ parameters:
 
       FV_ATT_P_Z:
         type: float
-        default: 0.12
+        default: 56.0
         decimal: 3
         min: 0.0
-        max: 10.0
+        max: 100.0
         description:
           short: Attitude proportional gain (Z-axis)
           long: |
@@ -286,7 +286,7 @@ parameters:
 
       FV_ATT_I_X:
         type: float
-        default: 0.0
+        default: 0.1
         decimal: 3
         min: 0.0
         max: 10.0
@@ -298,7 +298,7 @@ parameters:
 
       FV_ATT_I_Y:
         type: float
-        default: 0.0
+        default: 0.1
         decimal: 3
         min: 0.0
         max: 10.0
@@ -310,7 +310,7 @@ parameters:
 
       FV_ATT_I_Z:
         type: float
-        default: 0.0
+        default: 3.0
         decimal: 3
         min: 0.0
         max: 10.0
@@ -322,7 +322,7 @@ parameters:
 
       FV_ATT_D_X:
         type: float
-        default: 0.0
+        default: 0.8
         decimal: 3
         min: 0.0
         max: 10.0
@@ -334,7 +334,7 @@ parameters:
 
       FV_ATT_D_Y:
         type: float
-        default: 0.0
+        default: 0.8
         decimal: 3
         min: 0.0
         max: 10.0
@@ -346,10 +346,10 @@ parameters:
 
       FV_ATT_D_Z:
         type: float
-        default: 0.0
+        default: 14.0
         decimal: 3
         min: 0.0
-        max: 10.0
+        max: 100.0
         description:
           short: Attitude derivative gain (Z-axis)
           long: |
@@ -358,7 +358,7 @@ parameters:
 
       FV_ANG_VEL_P_X:
         type: float
-        default: 0.15
+        default: 6.0
         decimal: 3
         min: 0.0
         max: 10.0
@@ -370,7 +370,7 @@ parameters:
 
       FV_ANG_VEL_P_Y:
         type: float
-        default: 0.15
+        default: 6.0
         decimal: 3
         min: 0.0
         max: 10.0
@@ -382,10 +382,10 @@ parameters:
 
       FV_ANG_VEL_P_Z:
         type: float
-        default: 0.12
+        default: 56.0
         decimal: 3
         min: 0.0
-        max: 10.0
+        max: 100.0
         description:
           short: Angular velocity proportional gain (Z-axis)
           long: |
@@ -394,7 +394,7 @@ parameters:
 
       FV_ANG_VEL_I_X:
         type: float
-        default: 0.0
+        default: 0.1
         decimal: 3
         min: 0.0
         max: 10.0
@@ -406,7 +406,7 @@ parameters:
 
       FV_ANG_VEL_I_Y:
         type: float
-        default: 0.0
+        default: 0.1
         decimal: 3
         min: 0.0
         max: 10.0
@@ -418,7 +418,7 @@ parameters:
 
       FV_ANG_VEL_I_Z:
         type: float
-        default: 0.0
+        default: 1.8
         decimal: 3
         min: 0.0
         max: 10.0
@@ -430,7 +430,7 @@ parameters:
 
       FV_ANG_VEL_D_X:
         type: float
-        default: 0.2
+        default: 0.8
         decimal: 3
         min: 0.0
         max: 2.0
@@ -442,7 +442,7 @@ parameters:
 
       FV_ANG_VEL_D_Y:
         type: float
-        default: 0.2
+        default: 0.8
         decimal: 3
         min: 0.0
         max: 2.0
@@ -454,10 +454,10 @@ parameters:
 
       FV_ANG_VEL_D_Z:
         type: float
-        default: 0.2
+        default: 14.0
         decimal: 3
         min: 0.0
-        max: 2.0
+        max: 100.0
         description:
           short: Angular velocity derivative gain (Z-axis)
           long: |
@@ -466,9 +466,9 @@ parameters:
 
       FV_MASS:
         type: float
-        default: 1.0
+        default: 2.845
         unit: kg
-        decimal: 2
+        decimal: 3
         min: 0.1
         max: 50.0
         description:
@@ -479,7 +479,7 @@ parameters:
 
       FV_GRAVITY:
         type: float
-        default: 9.81
+        default: 9.8
         unit: m/s^2
         decimal: 2
         min: 1.0
@@ -492,7 +492,7 @@ parameters:
 
       FV_MOTOR_DISTANCE:
         type: float
-        default: 0.2
+        default: 0.22
         unit: m
         decimal: 3
         min: 0.01
@@ -505,8 +505,8 @@ parameters:
 
       FV_K_F:
         type: float
-        default: 1.0
-        decimal: 6
+        default: 0.00000701
+        decimal: 8
         min: 0.000001
         max: 1000.0
         description:
@@ -517,8 +517,8 @@ parameters:
 
       FV_K_M:
         type: float
-        default: 0.01
-        decimal: 6
+        default: 0.00000013
+        decimal: 8
         min: 0.0
         max: 1000.0
         description:
@@ -529,9 +529,9 @@ parameters:
 
       FV_INERTIA_XX:
         type: float
-        default: 0.01
+        default: 0.05892
         unit: kg m^2
-        decimal: 4
+        decimal: 5
         min: 0.001
         max: 10.0
         description:
@@ -542,9 +542,9 @@ parameters:
 
       FV_INERTIA_YY:
         type: float
-        default: 0.01
+        default: 0.05892
         unit: kg m^2
-        decimal: 4
+        decimal: 5
         min: 0.001
         max: 10.0
         description:
@@ -555,9 +555,9 @@ parameters:
 
       FV_INERTIA_ZZ:
         type: float
-        default: 0.02
+        default: 0.11
         unit: kg m^2
-        decimal: 4
+        decimal: 5
         min: 0.001
         max: 10.0
         description:
@@ -568,7 +568,7 @@ parameters:
 
       FV_J_RP:
         type: float
-        default: 0.0001
+        default: 0.000065
         unit: kg m^2
         decimal: 6
         min: 0.0
@@ -587,10 +587,10 @@ parameters:
         max: 100.0
         unit: m
         description:
-          short: Fallback target X (NED local)
+          short: Parameter target X (NED local)
           long: |
-            Fallback X position setpoint used when no external trajectory_setpoint
-            is received.
+            X position setpoint used by fullvector_control.
+            This module does not subscribe to trajectory_setpoint.
 
       FV_TARGET_Y:
         type: float
@@ -600,10 +600,10 @@ parameters:
         max: 100.0
         unit: m
         description:
-          short: Fallback target Y (NED local)
+          short: Parameter target Y (NED local)
           long: |
-            Fallback Y position setpoint used when no external trajectory_setpoint
-            is received.
+            Y position setpoint used by fullvector_control.
+            This module does not subscribe to trajectory_setpoint.
 
       FV_TARGET_Z:
         type: float
@@ -613,10 +613,10 @@ parameters:
         max: 100.0
         unit: m
         description:
-          short: Fallback target Z (NED local)
+          short: Parameter target Z (NED local)
           long: |
-            Fallback Z position setpoint used when no external trajectory_setpoint
-            is received.
+            Z position setpoint used by fullvector_control.
+            This module does not subscribe to trajectory_setpoint.
 
       FV_TARGET_ROLL:
         type: float
@@ -626,9 +626,9 @@ parameters:
         max: 3.141593
         unit: rad
         description:
-          short: Fallback target roll
+          short: Parameter target roll
           long: |
-            Fallback roll setpoint used when no external attitude target is received.
+            Roll setpoint used by fullvector_control.
 
       FV_TARGET_PITCH:
         type: float
@@ -638,9 +638,9 @@ parameters:
         max: 3.141593
         unit: rad
         description:
-          short: Fallback target pitch
+          short: Parameter target pitch
           long: |
-            Fallback pitch setpoint used when no external attitude target is received.
+            Pitch setpoint used by fullvector_control.
 
       FV_TARGET_YAW:
         type: float
@@ -650,13 +650,13 @@ parameters:
         max: 3.141593
         unit: rad
         description:
-          short: Fallback target yaw
+          short: Parameter target yaw
           long: |
-            Fallback yaw setpoint used when no external attitude target is received.
+            Yaw setpoint used by fullvector_control.
 
       FV_ENABLE:
         type: int32
-        default: 1
+        default: 0
         min: 0
         max: 1
         description:
@@ -665,4 +665,3 @@ parameters:
             Enable/disable fullvectormetric control output publishing.
             Control output is published only when this parameter is enabled,
             the vehicle is armed, and position control is active.
-

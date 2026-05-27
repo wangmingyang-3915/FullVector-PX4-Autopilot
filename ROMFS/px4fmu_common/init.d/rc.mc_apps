@@ -54,6 +54,20 @@ fi
 control_allocator start
 
 #
+# Start Fullvector controller if the FV_ENABLE parameter exists. The controller
+# remains silent while FV_ENABLE=0, and takes over actuator output when enabled.
+#
+if param compare -s FV_ENABLE 0
+then
+	fullvector_control start
+else
+	if param compare -s FV_ENABLE 1
+	then
+		fullvector_control start
+	fi
+fi
+
+#
 # Start Multicopter Rate Controller.
 #
 mc_rate_control start
