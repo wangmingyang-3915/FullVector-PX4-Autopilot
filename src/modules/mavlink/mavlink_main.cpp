@@ -60,6 +60,10 @@
 #include "mavlink_receiver.h"
 #include "mavlink_main.h"
 
+#ifndef MAV_PROTOCOL_CAPABILITY_SET_ACTUATOR_TARGET
+#define MAV_PROTOCOL_CAPABILITY_SET_ACTUATOR_TARGET 0
+#endif
+
 // Guard against MAVLink misconfiguration
 #ifndef MAVLINK_CRC_EXTRA
 #error MAVLINK_CRC_EXTRA has to be defined on PX4 systems

@@ -693,28 +693,28 @@ void FullvectorControl::controlAllocation(const UAVStates & state, const UAVComm
 	const float m4_sq = motor_4 * motor_4;
 	const float c = sqrtf(2.0f) * 0.5f;
 
-	const float Fx = - K_F * m1_sq * c * sinf(alpha_offset1)
-			 + K_F * m2_sq * c * sinf(alpha_offset2)
-			 + K_F * m3_sq * c * sinf(alpha_offset3)
-			 - K_F * m4_sq * c * sinf(alpha_offset4);
-
-	const float Fy =   K_F * m1_sq * c * sinf(alpha_offset1)
+	const float Fx = + K_F * m1_sq * c * sinf(alpha_offset1)
 			 - K_F * m2_sq * c * sinf(alpha_offset2)
-			 + K_F * m3_sq * c * sinf(alpha_offset3)
-			 - K_F * m4_sq * c * sinf(alpha_offset4);
+			 - K_F * m3_sq * c * sinf(alpha_offset3)
+			 + K_F * m4_sq * c * sinf(alpha_offset4);
 
-	const float Fz = - K_F * m1_sq * cosf(alpha_offset1)
-			 - K_F * m2_sq * cosf(alpha_offset2)
-			 - K_F * m3_sq * cosf(alpha_offset3)
-			 - K_F * m4_sq * cosf(alpha_offset4);
+	const float Fy = - K_F * m1_sq * c * sinf(alpha_offset1)
+			 + K_F * m2_sq * c * sinf(alpha_offset2)
+			 - K_F * m3_sq * c * sinf(alpha_offset3)
+			 + K_F * m4_sq * c * sinf(alpha_offset4);
+
+	const float Fz = + K_F * m1_sq * cosf(alpha_offset1)
+			 + K_F * m2_sq * cosf(alpha_offset2)
+			 + K_F * m3_sq * cosf(alpha_offset3)
+			 + K_F * m4_sq * cosf(alpha_offset4);
 
 	// 计算世界系加速度
 	const float mass_safe = math::max(mass, 1e-3f);
-	const float dv_x = ((cosf(pitch_rad) * cosf(yaw_rad)) * Fx
+	const float dv_x =- ((cosf(pitch_rad) * cosf(yaw_rad)) * Fx
 			  + (cosf(yaw_rad) * sinf(pitch_rad) * sinf(roll_rad) - sinf(yaw_rad) * cosf(roll_rad)) * Fy
 			  + (cosf(yaw_rad) * sinf(pitch_rad) * cosf(roll_rad) + sinf(yaw_rad) * sinf(roll_rad)) * Fz) / mass_safe;
 
-	const float dv_y = ((cosf(pitch_rad) * sinf(yaw_rad)) * Fx
+	const float dv_y =- ((cosf(pitch_rad) * sinf(yaw_rad)) * Fx
 			  + (sinf(yaw_rad) * sinf(pitch_rad) * sinf(roll_rad) + cosf(yaw_rad) * cosf(roll_rad)) * Fy
 			  + (sinf(yaw_rad) * sinf(pitch_rad) * cosf(roll_rad) - cosf(yaw_rad) * sinf(roll_rad)) * Fz) / mass_safe;
 

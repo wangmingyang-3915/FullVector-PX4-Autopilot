@@ -94,6 +94,7 @@ if (NOT CONFIG_BUILD_FLAT)
 	set(kernel_builtin_apps_string)
 	set(kernel_builtin_apps_proxy_string)
 	set(kernel_builtin_apps_decl_string)
+	set(builtin_apps_decl_string "${builtin_apps_decl_string}int launch_kmod_main(int argc, char *argv[]);\n")
 
 	list(SORT kernel_module_libraries)
 	foreach(module ${kernel_module_libraries})

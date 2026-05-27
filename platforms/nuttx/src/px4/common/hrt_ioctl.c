@@ -48,11 +48,15 @@
 #endif
 
 #define HRT_ENTRY_QUEUE_MAX_SIZE 3
+#if !defined(CONFIG_BUILD_FLAT)
 static px4_sem_t g_wait_sem;
 static struct hrt_call *next_hrt_entry[HRT_ENTRY_QUEUE_MAX_SIZE];
 static int hrt_entry_queued = 0;
 static bool suppress_entry_queue_error = false;
 static bool hrt_entry_queue_error = false;
+#endif
+
+#if !defined(CONFIG_BUILD_FLAT)
 
 void hrt_usr_call(void *arg)
 {
@@ -83,13 +87,13 @@ void hrt_ioctl_init(void)
 
 /* These functions are inlined in all but NuttX protected/kernel builds */
 
-latency_info_t get_latency(uint16_t bucket_idx, uint16_t counter_idx)
+static latency_info_t hrt_ioctl_get_latency(uint16_t bucket_idx, uint16_t counter_idx)
 {
 	latency_info_t ret = {latency_buckets[bucket_idx], latency_counters[counter_idx]};
 	return ret;
 }
 
-void reset_latency_counters(void)
+static void hrt_ioctl_reset_latency_counters(void)
 {
 	for (int i = 0; i <= get_latency_bucket_count(); i++) {
 		latency_counters[i] = 0;
@@ -156,12 +160,12 @@ hrt_ioctl(unsigned int cmd, unsigned long arg)
 
 	case HRT_GET_LATENCY: {
 			latency_boardctl_t *latency = (latency_boardctl_t *)arg;
-			latency->latency = get_latency(latency->bucket_idx, latency->counter_idx);
+			latency->latency = hrt_ioctl_get_latency(latency->bucket_idx, latency->counter_idx);
 		}
 		break;
 
 	case HRT_RESET_LATENCY:
-		reset_latency_counters();
+		hrt_ioctl_reset_latency_counters();
 		break;
 
 	default:
@@ -170,3 +174,23 @@ hrt_ioctl(unsigned int cmd, unsigned long arg)
 
 	return OK;
 }
+
+#else
+
+void hrt_usr_call(void *arg)
+{
+	(void)arg;
+}
+
+void hrt_ioctl_init(void)
+{
+}
+
+int hrt_ioctl(unsigned int cmd, unsigned long arg)
+{
+	(void)cmd;
+	(void)arg;
+	return -ENOTTY;
+}
+
+#endif

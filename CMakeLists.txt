@@ -122,6 +122,12 @@ execute_process(
 # git describe to X.Y.Z version
 string(REPLACE "." ";" VERSION_LIST ${PX4_GIT_TAG})
 
+list(LENGTH VERSION_LIST VERSION_LIST_LEN)
+if(VERSION_LIST_LEN LESS 3)
+	message(WARNING "git describe output '${PX4_GIT_TAG}' is not in vX.Y.Z format; falling back to version 0.0.0")
+	set(VERSION_LIST 0 0 0)
+endif()
+
 # major version
 list(GET VERSION_LIST 0 PX4_VERSION_MAJOR)
 string(REPLACE "v" "" PX4_VERSION_MAJOR ${PX4_VERSION_MAJOR})
