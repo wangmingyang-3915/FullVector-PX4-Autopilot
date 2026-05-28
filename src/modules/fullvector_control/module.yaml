@@ -490,7 +490,7 @@ parameters:
             Gravity acceleration used in thrust-related calculations.
             Keep this at 9.81 for Earth unless running a custom simulation.
 
-      FV_MOTOR_DISTANCE:
+      FV_MOTOR_DIST:
         type: float
         default: 0.22
         unit: m

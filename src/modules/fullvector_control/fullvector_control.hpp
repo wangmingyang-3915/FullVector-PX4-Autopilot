@@ -53,6 +53,7 @@
 
 
 #include <uORB/Subscription.hpp>
+#include <uORB/SubscriptionInterval.hpp>
 #include <uORB/Publication.hpp>
 
 // Subscriptions
@@ -186,7 +187,7 @@ private:
 		(ParamFloat<px4::params::FV_ANG_VEL_D_Z>)         _param_fv_ang_vel_d_z,
 		(ParamFloat<px4::params::FV_MASS>)                _param_fv_mass,
 		(ParamFloat<px4::params::FV_GRAVITY>)             _param_fv_gravity,
-		(ParamFloat<px4::params::FV_MOTOR_DISTANCE>)      _param_fv_motor_distance,
+		(ParamFloat<px4::params::FV_MOTOR_DIST>)          _param_fv_motor_distance,
 		(ParamFloat<px4::params::FV_K_F>)		  _param_fv_K_F,
 		(ParamFloat<px4::params::FV_K_M>)		  _param_fv_K_M,
 		(ParamFloat<px4::params::FV_INERTIA_XX>)          _param_fv_inertia_xx,

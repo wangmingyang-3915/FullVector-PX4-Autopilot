@@ -516,7 +516,6 @@ void FullvectorControl::PositionControl(const UAVStates & state, const UAVComman
 
 	// 发布位置控制器的加速度输出，便于其他模块或日志观察。
 	vehicle_local_position_setpoint_s position_controller_output{};
-	position_controller_output.timestamp_sample = hrt_absolute_time();
 	position_controller_output.timestamp = hrt_absolute_time();
 	position_controller_output.acceleration[0] = acc_cmd(0);
 	position_controller_output.acceleration[1] = acc_cmd(1);
@@ -543,9 +542,9 @@ void FullvectorControl::AttitudeControl(const UAVStates & state, UAVCommand & co
 
 	// 姿态角误差需要 wrap 到 [-pi, pi]，避免跨越 pi 时出现大跳变。
 	Vector3f e_att = euler_sp - euler_cur;
-	e_att(0) = math::wrap_pi(e_att(0));
-	e_att(1) = math::wrap_pi(e_att(1));
-	e_att(2) = math::wrap_pi(e_att(2));
+	e_att(0) = matrix::wrap_pi(e_att(0));
+	e_att(1) = matrix::wrap_pi(e_att(1));
+	e_att(2) = matrix::wrap_pi(e_att(2));
 
 	if (!_att_pid_state_initialized) {
 		// 首次运行初始化微分历史项。
@@ -620,10 +619,10 @@ void FullvectorControl::calculateMotorCommand(const UAVCommand & command)
 	const Vector3f &ang_acc_sp = _att_ang_acc_cmd;
 
 	// 根据期望姿态和水平加速度计算四个电机的倾转角偏置。
-	alpha_offset1 =  sqrt(2.0f)*phi_sp + sqrt(2.0f)*theta_sp - (acc_sp(0) - acc_sp(1)) / 4.0f;
-	alpha_offset2 = -sqrt(2.0f)*phi_sp - sqrt(2.0f)*theta_sp + (acc_sp(0) - acc_sp(1)) / 4.0f;
-	alpha_offset3 = -sqrt(2.0f)*phi_sp + sqrt(2.0f)*theta_sp + (acc_sp(0) + acc_sp(1)) / 4.0f;
-	alpha_offset4 =  sqrt(2.0f)*phi_sp - sqrt(2.0f)*theta_sp - (acc_sp(0) + acc_sp(1)) / 4.0f;
+	alpha_offset1 =  sqrtf(2.0f)*phi_sp + sqrtf(2.0f)*theta_sp - (acc_sp(0) - acc_sp(1)) / 4.0f;
+	alpha_offset2 = -sqrtf(2.0f)*phi_sp - sqrtf(2.0f)*theta_sp + (acc_sp(0) - acc_sp(1)) / 4.0f;
+	alpha_offset3 = -sqrtf(2.0f)*phi_sp + sqrtf(2.0f)*theta_sp + (acc_sp(0) + acc_sp(1)) / 4.0f;
+	alpha_offset4 =  sqrtf(2.0f)*phi_sp - sqrtf(2.0f)*theta_sp - (acc_sp(0) + acc_sp(1)) / 4.0f;
 
 	// 限制倾转角，避免指令超过机构允许范围。
 	constexpr float tilt_angle_max_rad = 0.52f;
