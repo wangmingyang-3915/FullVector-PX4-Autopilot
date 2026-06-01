@@ -315,11 +315,10 @@ void FullvectorControl::Run()
 
 	const bool fv_enabled = (_param_fv_enable.get() == 1);
 	const bool armed = _control_mode.flag_armed;
-	const bool position_control_enabled = _control_mode.flag_control_position_enabled;
-	const bool controller_active = fv_enabled && armed && position_control_enabled;
+	const bool controller_active = fv_enabled && armed;
 
 	if (!controller_active) {
-		// 模块未启用、未解锁或位置控制未启用时，不发布控制输出。
+		// 模块未启用或未解锁时，不发布控制输出。
 		// 控制器失活时清空 PID 状态，下一次激活从干净状态开始。
 		if (_controller_was_active) {
 			resetPidState();
@@ -327,6 +326,7 @@ void FullvectorControl::Run()
 		}
 
 		_controller_was_active = false;
+		_command_initialized = false;
 		return;
 	}
 
@@ -334,14 +334,16 @@ void FullvectorControl::Run()
 		// 从未激活到激活的上升沿，重置时间和积分项。
 		resetPidState();
 		_last_run_time = 0;
+		_command_initialized = false;
 	}
 
 	_controller_was_active = true;
 
 	const hrt_abstime now = hrt_absolute_time();
-	// 本模块不订阅 trajectory_setpoint，当前控制目标直接来自参数。
-	_current_command.position = Vector3f(_param_fv_target_x.get(), _param_fv_target_y.get(), _param_fv_target_z.get());
-	_current_command.Euler_angles = Vector3f(_param_fv_target_roll.get(), _param_fv_target_pitch.get(), _param_fv_target_yaw.get());
+	_manual_control_setpoint_sub.update(&_manual_control_setpoint);
+
+	const bool manual_valid = _manual_control_setpoint.valid
+				  && (hrt_elapsed_time(&_manual_control_setpoint.timestamp) < 500_ms);
 
 	// 计算本次控制周期 dt，首次运行时使用名义 10 ms。
 	if (_last_run_time == 0) {
@@ -373,9 +375,27 @@ void FullvectorControl::Run()
 	const bool allow_debug_print = debug_print_enabled
 					      && ((_last_debug_print_time == 0) || (hrt_elapsed_time(&_last_debug_print_time) > 200_ms));
 
+	// 遥控器输入无效或超时时，不继续闭环控制，避免沿用过期指令。
+	if (!manual_valid) {
+		publishSafeActuatorFallback();
+		resetPidState();
+		_last_run_time = 0;
+		_command_initialized = false;
+
+		if (allow_debug_print) {
+			PX4_WARN("manual control unavailable, publishing safe actuator fallback");
+			_last_debug_print_time = now;
+		}
+
+		return;
+	}
+
 	// 状态尚未初始化时发布安全输出，避免用无效状态闭环控制。
 	if (!updateUAVState()) {
 		publishSafeActuatorFallback();
+		resetPidState();
+		_last_run_time = 0;
+		_command_initialized = false;
 
 		if (allow_debug_print) {
 			PX4_WARN("state unavailable, publishing safe actuator fallback");
@@ -388,6 +408,9 @@ void FullvectorControl::Run()
 	// 状态严重过期时进入失效保护，不继续计算控制输出。
 	if (_state_age_level >= 2) {
 		publishSafeActuatorFallback();
+		resetPidState();
+		_last_run_time = 0;
+		_command_initialized = false;
 
 		if (allow_debug_print) {
 			PX4_WARN("state stale-fail, publishing safe actuator fallback");
@@ -399,6 +422,39 @@ void FullvectorControl::Run()
 
 	// 使用估计器状态作为控制输入。
 	const UAVStates &state_for_control = _current_state;
+
+	if (!_command_initialized) {
+		// 第一次收到有效状态后，将 RC 目标对齐到当前飞机状态，避免目标从参数点跳变。
+		_current_command.position = _current_state.position;
+		_current_command.Euler_angles = Vector3f(Eulerf(_current_state.attitude));
+		_command_initialized = true;
+	}
+
+	const auto finite_stick = [](float value) {
+		return PX4_ISFINITE(value) ? math::constrain(value, -1.0f, 1.0f) : 0.0f;
+	};
+
+	constexpr float xy_speed_max = 1.0f;      // m/s
+	constexpr float z_speed_max = 0.5f;       // m/s
+	constexpr float roll_max = 0.35f;         // rad
+	constexpr float pitch_max = 0.35f;        // rad
+	constexpr float yaw_rate_max = 0.8f;      // rad/s
+
+	const float stick_roll = finite_stick(_manual_control_setpoint.roll);
+	const float stick_pitch = finite_stick(_manual_control_setpoint.pitch);
+	const float stick_yaw = finite_stick(_manual_control_setpoint.yaw);
+	const float stick_throttle = finite_stick(_manual_control_setpoint.throttle);
+	const float yaw = Eulerf(_current_state.attitude).psi();
+
+	const float forward_sp = xy_speed_max * stick_pitch;
+	const float right_sp = xy_speed_max * stick_roll;
+
+	_current_command.position(0) += (cosf(yaw) * forward_sp - sinf(yaw) * right_sp) * _dt;
+	_current_command.position(1) += (sinf(yaw) * forward_sp + cosf(yaw) * right_sp) * _dt;
+	_current_command.position(2) += (-z_speed_max * stick_throttle) * _dt;
+	_current_command.Euler_angles(0) = stick_roll * roll_max;
+	_current_command.Euler_angles(1) = -stick_pitch * pitch_max;
+	_current_command.Euler_angles(2) = matrix::wrap_pi(_current_command.Euler_angles(2) + stick_yaw * yaw_rate_max * _dt);
 
 	perf_begin(_loop_perf);
 
@@ -869,5 +925,3 @@ extern "C" __EXPORT int fullvector_control_main(int argc, char *argv[])
 {
 	return FullvectorControl::main(argc, argv);
 }
-
-

@@ -655,10 +655,8 @@ parameters:
             Yaw setpoint used by fullvector_control.
 
       FV_ENABLE:
-        type: int32
-        default: 0
-        min: 0
-        max: 1
+        type: boolean
+        default: 1
         description:
           short: Enable fullvectormetric control output
           long: |

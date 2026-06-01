@@ -67,6 +67,7 @@
 #include <uORB/topics/vehicle_angular_acceleration_setpoint.h>
 #include <uORB/topics/takeoff_status.h>
 #include <uORB/topics/vehicle_land_detected.h>
+#include <uORB/topics/manual_control_setpoint.h>
 
 // Publications
 #include <uORB/topics/actuator_motors.h>
@@ -220,12 +221,14 @@ private:
 	uORB::Subscription _actuator_motors_sub{ORB_ID(actuator_motors)};
 	uORB::Subscription _takeoff_status_sub{ORB_ID(takeoff_status)};
 	uORB::Subscription _vehicle_land_detected_sub{ORB_ID(vehicle_land_detected)};
+	uORB::Subscription _manual_control_setpoint_sub{ORB_ID(manual_control_setpoint)};
 
 	// State variables
 	vehicle_local_position_s _position{};
 	vehicle_attitude_s _attitude{};
     	vehicle_angular_velocity_s _angular_velocity{};
 	vehicle_control_mode_s _control_mode{};
+	manual_control_setpoint_s _manual_control_setpoint{};
 
 	// PID 参数矩阵
 	Matrix3f gain_pos_pid{};
@@ -252,6 +255,7 @@ private:
 	float _dt{0.01f};                   	// 控制周期（秒）
 
 	bool _controller_was_active{false};
+	bool _command_initialized{false};
 	uint8_t _state_age_level{0}; // 0=fresh, 1=aging, 2=stale-fail
 
 	UAVStates _current_state;		// 当前无人机状态
