@@ -424,9 +424,9 @@ void FullvectorControl::Run()
 	const UAVStates &state_for_control = _current_state;
 
 	if (!_command_initialized) {
-		// 第一次收到有效状态后，将 RC 目标对齐到当前飞机状态，避免目标从参数点跳变。
+		// 第一次收到有效状态后，将位置目标对齐到当前飞机位置，避免目标从参数点跳变。
 		_current_command.position = _current_state.position;
-		_current_command.Euler_angles = Vector3f(Eulerf(_current_state.attitude));
+		_current_command.Euler_angles.zero();
 		_command_initialized = true;
 	}
 
@@ -436,13 +436,9 @@ void FullvectorControl::Run()
 
 	constexpr float xy_speed_max = 1.0f;      // m/s
 	constexpr float z_speed_max = 0.5f;       // m/s
-	constexpr float roll_max = 0.35f;         // rad
-	constexpr float pitch_max = 0.35f;        // rad
-	constexpr float yaw_rate_max = 0.8f;      // rad/s
 
 	const float stick_roll = finite_stick(_manual_control_setpoint.roll);
 	const float stick_pitch = finite_stick(_manual_control_setpoint.pitch);
-	const float stick_yaw = finite_stick(_manual_control_setpoint.yaw);
 	const float stick_throttle = finite_stick(_manual_control_setpoint.throttle);
 	const float yaw = Eulerf(_current_state.attitude).psi();
 
@@ -452,9 +448,9 @@ void FullvectorControl::Run()
 	_current_command.position(0) += (cosf(yaw) * forward_sp - sinf(yaw) * right_sp) * _dt;
 	_current_command.position(1) += (sinf(yaw) * forward_sp + cosf(yaw) * right_sp) * _dt;
 	_current_command.position(2) += (-z_speed_max * stick_throttle) * _dt;
-	_current_command.Euler_angles(0) = stick_roll * roll_max;
-	_current_command.Euler_angles(1) = -stick_pitch * pitch_max;
-	_current_command.Euler_angles(2) = matrix::wrap_pi(_current_command.Euler_angles(2) + stick_yaw * yaw_rate_max * _dt);
+
+	// 全向矢量控制中，遥控器只生成位置目标；姿态目标固定为水平且航向为 0。
+	_current_command.Euler_angles.zero();
 
 	perf_begin(_loop_perf);
 
