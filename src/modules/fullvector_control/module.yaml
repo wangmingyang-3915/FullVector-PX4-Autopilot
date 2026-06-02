@@ -527,6 +527,54 @@ parameters:
             Moment coefficient used to estimate reaction torque from motor rotation.
             Keep consistent with the propulsion model used in simulation.
 
+      FV_HOVER_THR:
+        type: float
+        default: 0.5
+        decimal: 3
+        min: 0.05
+        max: 0.95
+        description:
+          short: Normalized hover thrust
+          long: |
+            Normalized actuator_motors output corresponding to the internally
+            computed hover angular speed.
+
+      FV_MAN_THR_FF:
+        type: float
+        default: 0.35
+        decimal: 3
+        min: 0.0
+        max: 0.8
+        description:
+          short: Manual throttle feed-forward
+          long: |
+            Direct normalized motor thrust offset applied from the manual
+            throttle stick, so PWM changes immediately during bench checks.
+
+      FV_MAN_TILT_FF:
+        type: float
+        default: 0.7
+        decimal: 3
+        min: 0.0
+        max: 1.0
+        description:
+          short: Manual tilt feed-forward
+          long: |
+            Direct normalized tilt-servo offset applied from manual roll and
+            pitch sticks, so tilt PWM changes immediately during bench checks.
+
+      FV_MAN_YAW_FF:
+        type: float
+        default: 0.2
+        decimal: 3
+        min: 0.0
+        max: 0.5
+        description:
+          short: Manual yaw feed-forward
+          long: |
+            Direct normalized differential motor thrust applied from the manual
+            yaw stick. Motors 1/2 and 3/4 move in opposite directions.
+
       FV_INERTIA_XX:
         type: float
         default: 0.05892

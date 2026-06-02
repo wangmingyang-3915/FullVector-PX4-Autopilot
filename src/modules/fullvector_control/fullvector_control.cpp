@@ -134,6 +134,48 @@ void FullvectorControl::publishSafeActuatorFallback()
 	_motor_tilt_pub_raw.publish(tilt_safe);
 }
 
+void FullvectorControl::publishManualActuatorFallback(float stick_roll, float stick_pitch, float stick_yaw, float stick_throttle)
+{
+	const float hover_throttle = math::constrain(_param_fv_hover_thr.get(), 0.05f, 0.95f);
+	const float manual_throttle_ff = math::constrain(_param_fv_man_thr_ff.get(), 0.0f, 0.8f)
+					 * math::constrain(stick_throttle, -1.0f, 1.0f);
+	const float motor_base = math::constrain(hover_throttle + manual_throttle_ff, 0.0f, 1.0f);
+	const float yaw_diff = math::constrain(_param_fv_man_yaw_ff.get(), 0.0f, 0.5f)
+			       * math::constrain(stick_yaw, -1.0f, 1.0f);
+
+	actuator_motors_s motor_manual{};
+	motor_manual.timestamp_sample = hrt_absolute_time();
+	motor_manual.timestamp = hrt_absolute_time();
+
+	for (int i = 0; i < actuator_motors_s::NUM_CONTROLS; i++) {
+		motor_manual.control[i] = NAN;
+	}
+
+	motor_manual.control[0] = math::constrain(motor_base + yaw_diff, 0.0f, 1.0f);
+	motor_manual.control[1] = math::constrain(motor_base + yaw_diff, 0.0f, 1.0f);
+	motor_manual.control[2] = math::constrain(motor_base - yaw_diff, 0.0f, 1.0f);
+	motor_manual.control[3] = math::constrain(motor_base - yaw_diff, 0.0f, 1.0f);
+	_motor_speed_pub_raw.publish(motor_manual);
+
+	actuator_servos_s tilt_manual{};
+	tilt_manual.timestamp_sample = hrt_absolute_time();
+	tilt_manual.timestamp = hrt_absolute_time();
+
+	for (int i = 0; i < actuator_servos_s::NUM_CONTROLS; i++) {
+		tilt_manual.control[i] = NAN;
+	}
+
+	const float manual_tilt_ff = math::constrain(_param_fv_man_tilt_ff.get(), 0.0f, 1.0f);
+	const float roll = math::constrain(stick_roll, -1.0f, 1.0f);
+	const float pitch = math::constrain(stick_pitch, -1.0f, 1.0f);
+
+	tilt_manual.control[0] = math::constrain(manual_tilt_ff * ( roll + pitch), -1.0f, 1.0f);
+	tilt_manual.control[1] = math::constrain(manual_tilt_ff * (-roll - pitch), -1.0f, 1.0f);
+	tilt_manual.control[2] = math::constrain(manual_tilt_ff * (-roll + pitch), -1.0f, 1.0f);
+	tilt_manual.control[3] = math::constrain(manual_tilt_ff * ( roll - pitch), -1.0f, 1.0f);
+	_motor_tilt_pub_raw.publish(tilt_manual);
+}
+
 void FullvectorControl::parameters_update(bool force)
 {
 	// 检查参数是否更新；force=true 时用于构造阶段强制刷新一次。
@@ -375,6 +417,19 @@ void FullvectorControl::Run()
 	const bool allow_debug_print = debug_print_enabled
 					      && ((_last_debug_print_time == 0) || (hrt_elapsed_time(&_last_debug_print_time) > 200_ms));
 
+	const auto finite_stick = [](float value) {
+		return PX4_ISFINITE(value) ? math::constrain(value, -1.0f, 1.0f) : 0.0f;
+	};
+
+	const float stick_roll = finite_stick(_manual_control_setpoint.roll);
+	const float stick_pitch = finite_stick(_manual_control_setpoint.pitch);
+	const float stick_yaw = finite_stick(_manual_control_setpoint.yaw);
+	const float stick_throttle = finite_stick(_manual_control_setpoint.throttle);
+	_manual_roll_input = stick_roll;
+	_manual_pitch_input = stick_pitch;
+	_manual_yaw_input = stick_yaw;
+	_manual_throttle_input = stick_throttle;
+
 	// 遥控器输入无效或超时时，不继续闭环控制，避免沿用过期指令。
 	if (!manual_valid) {
 		publishSafeActuatorFallback();
@@ -392,13 +447,13 @@ void FullvectorControl::Run()
 
 	// 状态尚未初始化时发布安全输出，避免用无效状态闭环控制。
 	if (!updateUAVState()) {
-		publishSafeActuatorFallback();
+		publishManualActuatorFallback(stick_roll, stick_pitch, stick_yaw, stick_throttle);
 		resetPidState();
 		_last_run_time = 0;
 		_command_initialized = false;
 
 		if (allow_debug_print) {
-			PX4_WARN("state unavailable, publishing safe actuator fallback");
+			PX4_WARN("state unavailable, publishing manual actuator fallback");
 			_last_debug_print_time = now;
 		}
 
@@ -407,13 +462,13 @@ void FullvectorControl::Run()
 
 	// 状态严重过期时进入失效保护，不继续计算控制输出。
 	if (_state_age_level >= 2) {
-		publishSafeActuatorFallback();
+		publishManualActuatorFallback(stick_roll, stick_pitch, stick_yaw, stick_throttle);
 		resetPidState();
 		_last_run_time = 0;
 		_command_initialized = false;
 
 		if (allow_debug_print) {
-			PX4_WARN("state stale-fail, publishing safe actuator fallback");
+			PX4_WARN("state stale-fail, publishing manual actuator fallback");
 			_last_debug_print_time = now;
 		}
 
@@ -430,16 +485,9 @@ void FullvectorControl::Run()
 		_command_initialized = true;
 	}
 
-	const auto finite_stick = [](float value) {
-		return PX4_ISFINITE(value) ? math::constrain(value, -1.0f, 1.0f) : 0.0f;
-	};
-
 	constexpr float xy_speed_max = 1.0f;      // m/s
 	constexpr float z_speed_max = 0.5f;       // m/s
 
-	const float stick_roll = finite_stick(_manual_control_setpoint.roll);
-	const float stick_pitch = finite_stick(_manual_control_setpoint.pitch);
-	const float stick_throttle = finite_stick(_manual_control_setpoint.throttle);
 	const float yaw = Eulerf(_current_state.attitude).psi();
 
 	const float forward_sp = xy_speed_max * stick_pitch;
@@ -669,15 +717,22 @@ void FullvectorControl::calculateMotorCommand(const UAVCommand & command)
 	// 使用前级位置环输出的加速度和姿态环输出的角加速度。
 	const Vector3f &acc_sp = _pos_acc_cmd;
 	const Vector3f &ang_acc_sp = _att_ang_acc_cmd;
+	constexpr float tilt_angle_max_rad = 0.52f;
+	const float manual_tilt_angle = tilt_angle_max_rad * math::constrain(_param_fv_man_tilt_ff.get(), 0.0f, 1.0f);
+	const float manual_roll = math::constrain(_manual_roll_input, -1.0f, 1.0f);
+	const float manual_pitch = math::constrain(_manual_pitch_input, -1.0f, 1.0f);
 
 	// 根据期望姿态和水平加速度计算四个电机的倾转角偏置。
-	alpha_offset1 =  sqrtf(2.0f)*phi_sp + sqrtf(2.0f)*theta_sp - (acc_sp(0) - acc_sp(1)) / 4.0f;
-	alpha_offset2 = -sqrtf(2.0f)*phi_sp - sqrtf(2.0f)*theta_sp + (acc_sp(0) - acc_sp(1)) / 4.0f;
-	alpha_offset3 = -sqrtf(2.0f)*phi_sp + sqrtf(2.0f)*theta_sp + (acc_sp(0) + acc_sp(1)) / 4.0f;
-	alpha_offset4 =  sqrtf(2.0f)*phi_sp - sqrtf(2.0f)*theta_sp - (acc_sp(0) + acc_sp(1)) / 4.0f;
+	alpha_offset1 =  sqrtf(2.0f)*phi_sp + sqrtf(2.0f)*theta_sp - (acc_sp(0) - acc_sp(1)) / 4.0f
+			+ manual_tilt_angle * ( manual_roll + manual_pitch);
+	alpha_offset2 = -sqrtf(2.0f)*phi_sp - sqrtf(2.0f)*theta_sp + (acc_sp(0) - acc_sp(1)) / 4.0f
+			+ manual_tilt_angle * (-manual_roll - manual_pitch);
+	alpha_offset3 = -sqrtf(2.0f)*phi_sp + sqrtf(2.0f)*theta_sp + (acc_sp(0) + acc_sp(1)) / 4.0f
+			+ manual_tilt_angle * (-manual_roll + manual_pitch);
+	alpha_offset4 =  sqrtf(2.0f)*phi_sp - sqrtf(2.0f)*theta_sp - (acc_sp(0) + acc_sp(1)) / 4.0f
+			+ manual_tilt_angle * ( manual_roll - manual_pitch);
 
 	// 限制倾转角，避免指令超过机构允许范围。
-	constexpr float tilt_angle_max_rad = 0.52f;
 	alpha_offset1 = math::constrain(alpha_offset1, -tilt_angle_max_rad, tilt_angle_max_rad);
 	alpha_offset2 = math::constrain(alpha_offset2, -tilt_angle_max_rad, tilt_angle_max_rad);
 	alpha_offset3 = math::constrain(alpha_offset3, -tilt_angle_max_rad, tilt_angle_max_rad);
@@ -688,6 +743,7 @@ void FullvectorControl::calculateMotorCommand(const UAVCommand & command)
 	const float base_thrust = sqrtf((mass * gravity) / (4.0f * kf_safe));
 
 	// 将姿态角加速度和垂向加速度叠加到四个电机角速度命令。
+	// 电机编号：1=右前，2=左后，3=左前，4=右后；偏航按 1/2 与 3/4 反向差动。
 	motor_1 = base_thrust - ang_acc_sp(0) + ang_acc_sp(1) + ang_acc_sp(2) + acc_sp(2);
 	motor_2 = base_thrust + ang_acc_sp(0) - ang_acc_sp(1) + ang_acc_sp(2) + acc_sp(2);
 	motor_3 = base_thrust + ang_acc_sp(0) + ang_acc_sp(1) - ang_acc_sp(2) + acc_sp(2);
@@ -700,8 +756,8 @@ void FullvectorControl::calculateMotorCommand(const UAVCommand & command)
 	motor_3 = math::constrain(motor_3, 0.0f, motor_speed_max);
 	motor_4 = math::constrain(motor_4, 0.0f, motor_speed_max);
 
-	// actuator_motors 期望归一化推力 [-1, 1]，这里保留内部 raw omega，
-	// 发布前按推力近似关系 T ~ omega^2 转换到 [0, 1]。
+	// actuator_motors 期望归一化推力 [-1, 1]。内部 motor_* 是角速度，
+	// 按 T ~ omega^2 映射到悬停油门附近，避免用物理角速度上限直接缩放导致输出接近 0。
 	actuator_motors_s motor_speed{};
 	motor_speed.timestamp_sample = hrt_absolute_time();
 	motor_speed.timestamp = hrt_absolute_time();
@@ -710,15 +766,22 @@ void FullvectorControl::calculateMotorCommand(const UAVCommand & command)
 		motor_speed.control[i] = NAN;
 	}
 
-	const float motor_1_norm = math::constrain(motor_1 / motor_speed_max, 0.0f, 1.0f);
-	const float motor_2_norm = math::constrain(motor_2 / motor_speed_max, 0.0f, 1.0f);
-	const float motor_3_norm = math::constrain(motor_3 / motor_speed_max, 0.0f, 1.0f);
-	const float motor_4_norm = math::constrain(motor_4 / motor_speed_max, 0.0f, 1.0f);
+	const float hover_omega = math::max(base_thrust, 1.0f);
+	const float hover_throttle = math::constrain(_param_fv_hover_thr.get(), 0.05f, 0.95f);
+	const float manual_throttle_ff = math::constrain(_param_fv_man_thr_ff.get(), 0.0f, 0.8f)
+					 * math::constrain(_manual_throttle_input, -1.0f, 1.0f);
+	const float manual_yaw_ff = math::constrain(_param_fv_man_yaw_ff.get(), 0.0f, 0.5f)
+				    * math::constrain(_manual_yaw_input, -1.0f, 1.0f);
+	const float vertical_accel_scale = math::constrain(1.0f - (_pos_acc_cmd(2) / math::max(gravity, 1.0f)), 0.2f, 2.0f);
+	const auto omega_to_normalized_thrust = [hover_omega, hover_throttle, manual_throttle_ff, vertical_accel_scale](float omega) {
+		const float ratio = omega / hover_omega;
+		return math::constrain((hover_throttle * vertical_accel_scale * ratio * ratio) + manual_throttle_ff, 0.0f, 1.0f);
+	};
 
-	motor_speed.control[0] = motor_1_norm * motor_1_norm;
-	motor_speed.control[1] = motor_2_norm * motor_2_norm;
-	motor_speed.control[2] = motor_3_norm * motor_3_norm;
-	motor_speed.control[3] = motor_4_norm * motor_4_norm;
+	motor_speed.control[0] = math::constrain(omega_to_normalized_thrust(motor_1) + manual_yaw_ff, 0.0f, 1.0f);
+	motor_speed.control[1] = math::constrain(omega_to_normalized_thrust(motor_2) + manual_yaw_ff, 0.0f, 1.0f);
+	motor_speed.control[2] = math::constrain(omega_to_normalized_thrust(motor_3) - manual_yaw_ff, 0.0f, 1.0f);
+	motor_speed.control[3] = math::constrain(omega_to_normalized_thrust(motor_4) - manual_yaw_ff, 0.0f, 1.0f);
 	_motor_speed_pub_raw.publish(motor_speed);
 
 	// actuator_servos 期望归一化位置 [-1, 1]，这里按最大倾转角归一化。
@@ -835,7 +898,7 @@ void FullvectorControl::controlAllocation(const UAVStates & state, const UAVComm
 	const float I_xx = math::max(inertia(0, 0), 1e-6f);
 	const float I_yy = math::max(inertia(1, 1), 1e-6f);
 	const float I_zz = math::max(inertia(2, 2), 1e-6f);
-	const float rotor_mix = (motor_1 - motor_2 + motor_3 - motor_4);
+	const float rotor_mix = (motor_1 + motor_2 - motor_3 - motor_4);
 
 	const float dp = (tau_x + q * r * (I_yy - I_zz) + J_RP * q * rotor_mix) / I_xx;
 	const float dq = (tau_y + p * r * (I_zz - I_xx) - J_RP * p * rotor_mix) / I_yy;

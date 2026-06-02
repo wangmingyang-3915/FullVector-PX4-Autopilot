@@ -140,6 +140,7 @@ private:
 	void parameters_update(bool force);
 	void resetPidState();
 	void publishSafeActuatorFallback();
+	void publishManualActuatorFallback(float stick_roll, float stick_pitch, float stick_yaw, float stick_throttle);
 
 	bool updateUAVState();
 
@@ -191,6 +192,10 @@ private:
 		(ParamFloat<px4::params::FV_MOTOR_DIST>)          _param_fv_motor_distance,
 		(ParamFloat<px4::params::FV_K_F>)		  _param_fv_K_F,
 		(ParamFloat<px4::params::FV_K_M>)		  _param_fv_K_M,
+		(ParamFloat<px4::params::FV_HOVER_THR>)		  _param_fv_hover_thr,
+		(ParamFloat<px4::params::FV_MAN_THR_FF>)	  _param_fv_man_thr_ff,
+		(ParamFloat<px4::params::FV_MAN_TILT_FF>)	  _param_fv_man_tilt_ff,
+		(ParamFloat<px4::params::FV_MAN_YAW_FF>)	  _param_fv_man_yaw_ff,
 		(ParamFloat<px4::params::FV_INERTIA_XX>)          _param_fv_inertia_xx,
 		(ParamFloat<px4::params::FV_INERTIA_YY>)          _param_fv_inertia_yy,
 		(ParamFloat<px4::params::FV_INERTIA_ZZ>)	  _param_fv_inertia_zz,
@@ -272,6 +277,10 @@ private:
 	float motor_2{0.0f};
 	float motor_3{0.0f};
 	float motor_4{0.0f};
+	float _manual_roll_input{0.0f};
+	float _manual_pitch_input{0.0f};
+	float _manual_yaw_input{0.0f};
+	float _manual_throttle_input{0.0f};
 
 	// 串级PID中间状态：外环位置、内环速度
 	Vector3f _pos_error_int{};
