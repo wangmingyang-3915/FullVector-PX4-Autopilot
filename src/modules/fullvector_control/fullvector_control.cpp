@@ -136,6 +136,7 @@ void FullvectorControl::publishSafeActuatorFallback()
 
 void FullvectorControl::publishManualActuatorFallback(float stick_roll, float stick_pitch, float stick_yaw, float stick_throttle)
 {
+	// 手动降级输出保留基本油门和偏航差动，让飞手在状态估计异常时仍有有限控制权。
 	const float hover_throttle = math::constrain(_param_fv_hover_thr.get(), 0.05f, 0.95f);
 	const float manual_throttle_ff = math::constrain(_param_fv_man_thr_ff.get(), 0.0f, 0.8f)
 					 * math::constrain(stick_throttle, -1.0f, 1.0f);
@@ -143,6 +144,7 @@ void FullvectorControl::publishManualActuatorFallback(float stick_roll, float st
 	const float yaw_diff = math::constrain(_param_fv_man_yaw_ff.get(), 0.0f, 0.5f)
 			       * math::constrain(stick_yaw, -1.0f, 1.0f);
 
+	// 电机通道先全部置为 NaN，只填充本机实际使用的前四路。
 	actuator_motors_s motor_manual{};
 	motor_manual.timestamp_sample = hrt_absolute_time();
 	motor_manual.timestamp = hrt_absolute_time();
@@ -157,6 +159,7 @@ void FullvectorControl::publishManualActuatorFallback(float stick_roll, float st
 	motor_manual.control[3] = math::constrain(motor_base - yaw_diff, 0.0f, 1.0f);
 	_motor_speed_pub_raw.publish(motor_manual);
 
+	// 舵机通道同样只发布前四路，映射 roll/pitch 到四个倾转机构的对角组合。
 	actuator_servos_s tilt_manual{};
 	tilt_manual.timestamp_sample = hrt_absolute_time();
 	tilt_manual.timestamp = hrt_absolute_time();
@@ -165,14 +168,15 @@ void FullvectorControl::publishManualActuatorFallback(float stick_roll, float st
 		tilt_manual.control[i] = NAN;
 	}
 
+	// 手动倾转前馈只作为降级控制，不参与闭环姿态稳定。
 	const float manual_tilt_ff = math::constrain(_param_fv_man_tilt_ff.get(), 0.0f, 1.0f);
 	const float roll = math::constrain(stick_roll, -1.0f, 1.0f);
 	const float pitch = math::constrain(stick_pitch, -1.0f, 1.0f);
 
-	tilt_manual.control[0] = math::constrain(manual_tilt_ff * ( roll + pitch), -1.0f, 1.0f);
-	tilt_manual.control[1] = math::constrain(manual_tilt_ff * (-roll - pitch), -1.0f, 1.0f);
-	tilt_manual.control[2] = math::constrain(manual_tilt_ff * (-roll + pitch), -1.0f, 1.0f);
-	tilt_manual.control[3] = math::constrain(manual_tilt_ff * ( roll - pitch), -1.0f, 1.0f);
+	tilt_manual.control[0] = math::constrain(manual_tilt_ff * (-roll + pitch), -1.0f, 1.0f);
+	tilt_manual.control[1] = math::constrain(manual_tilt_ff * ( roll - pitch), -1.0f, 1.0f);
+	tilt_manual.control[2] = math::constrain(manual_tilt_ff * ( roll + pitch), -1.0f, 1.0f);
+	tilt_manual.control[3] = math::constrain(manual_tilt_ff * (-roll - pitch), -1.0f, 1.0f);
 	_motor_tilt_pub_raw.publish(tilt_manual);
 }
 
@@ -417,6 +421,7 @@ void FullvectorControl::Run()
 	const bool allow_debug_print = debug_print_enabled
 					      && ((_last_debug_print_time == 0) || (hrt_elapsed_time(&_last_debug_print_time) > 200_ms));
 
+	// 遥控杆输入可能出现 NaN，统一限幅并在异常时回零。
 	const auto finite_stick = [](float value) {
 		return PX4_ISFINITE(value) ? math::constrain(value, -1.0f, 1.0f) : 0.0f;
 	};
@@ -488,11 +493,13 @@ void FullvectorControl::Run()
 	constexpr float xy_speed_max = 1.0f;      // m/s
 	constexpr float z_speed_max = 0.5f;       // m/s
 
+	// 按当前航向把机体系前/右速度指令旋转到本地 NED 平面。
 	const float yaw = Eulerf(_current_state.attitude).psi();
 
 	const float forward_sp = xy_speed_max * stick_pitch;
 	const float right_sp = xy_speed_max * stick_roll;
 
+	// 将速度型手动指令积分成位置目标，位置环继续负责平滑跟踪。
 	_current_command.position(0) += (cosf(yaw) * forward_sp - sinf(yaw) * right_sp) * _dt;
 	_current_command.position(1) += (sinf(yaw) * forward_sp + cosf(yaw) * right_sp) * _dt;
 	_current_command.position(2) += (-z_speed_max * stick_throttle) * _dt;
@@ -506,6 +513,7 @@ void FullvectorControl::Run()
 		PX4_INFO("debug value=%.3f", (double)_param_print_num_value.get());
 	}
 
+	// 读取 PX4 标准推力设定值，仅用于调试打印，不参与本控制器输出。
 	vehicle_thrust_setpoint_s thrust_feedback{};
 	const bool thrust_updated = _vehicle_thrust_setpoint_sub.update(&thrust_feedback);
 
@@ -531,6 +539,7 @@ void FullvectorControl::Run()
 		}
 	}
 
+	// 读取起飞状态和落地检测，配合调试日志判断当前飞行阶段。
 	takeoff_status_s takeoff_status{};
 	vehicle_land_detected_s land_detected{};
 	_takeoff_status_sub.update(&takeoff_status);
@@ -547,7 +556,7 @@ void FullvectorControl::Run()
 		_last_debug_print_time = now;
 	}
 
-	// 串级控制流程：位置环 -> 姿态环 -> 力/力矩分配。
+	// 串级控制流程：位置环 + 姿态环 -> 力/力矩分配。
 	PositionControl(state_for_control, _current_command, _dt);
 	AttitudeControl(state_for_control, _current_command, _dt);
 	controlAllocation(state_for_control, _current_command);
@@ -723,13 +732,13 @@ void FullvectorControl::calculateMotorCommand(const UAVCommand & command)
 	const float manual_pitch = math::constrain(_manual_pitch_input, -1.0f, 1.0f);
 
 	// 根据期望姿态和水平加速度计算四个电机的倾转角偏置。
-	alpha_offset1 =  sqrtf(2.0f)*phi_sp + sqrtf(2.0f)*theta_sp - (acc_sp(0) - acc_sp(1)) / 4.0f
+	alpha_offset1 =  sqrtf(2.0f)*phi_sp + sqrtf(2.0f)*theta_sp + (acc_sp(0) - acc_sp(1)) / 4.0f
 			+ manual_tilt_angle * ( manual_roll + manual_pitch);
-	alpha_offset2 = -sqrtf(2.0f)*phi_sp - sqrtf(2.0f)*theta_sp + (acc_sp(0) - acc_sp(1)) / 4.0f
+	alpha_offset2 = -sqrtf(2.0f)*phi_sp - sqrtf(2.0f)*theta_sp - (acc_sp(0) - acc_sp(1)) / 4.0f
 			+ manual_tilt_angle * (-manual_roll - manual_pitch);
-	alpha_offset3 = -sqrtf(2.0f)*phi_sp + sqrtf(2.0f)*theta_sp + (acc_sp(0) + acc_sp(1)) / 4.0f
+	alpha_offset3 = -sqrtf(2.0f)*phi_sp + sqrtf(2.0f)*theta_sp - (acc_sp(0) + acc_sp(1)) / 4.0f
 			+ manual_tilt_angle * (-manual_roll + manual_pitch);
-	alpha_offset4 =  sqrtf(2.0f)*phi_sp - sqrtf(2.0f)*theta_sp - (acc_sp(0) + acc_sp(1)) / 4.0f
+	alpha_offset4 =  sqrtf(2.0f)*phi_sp - sqrtf(2.0f)*theta_sp + (acc_sp(0) + acc_sp(1)) / 4.0f
 			+ manual_tilt_angle * ( manual_roll - manual_pitch);
 
 	// 限制倾转角，避免指令超过机构允许范围。
@@ -772,12 +781,15 @@ void FullvectorControl::calculateMotorCommand(const UAVCommand & command)
 					 * math::constrain(_manual_throttle_input, -1.0f, 1.0f);
 	const float manual_yaw_ff = math::constrain(_param_fv_man_yaw_ff.get(), 0.0f, 0.5f)
 				    * math::constrain(_manual_yaw_input, -1.0f, 1.0f);
+	// 垂向加速度指令改变总推力需求，这里转换为悬停油门附近的缩放系数。
 	const float vertical_accel_scale = math::constrain(1.0f - (_pos_acc_cmd(2) / math::max(gravity, 1.0f)), 0.2f, 2.0f);
+	// omega 与推力近似满足平方关系，先相对悬停角速度归一化，再叠加手动油门前馈。
 	const auto omega_to_normalized_thrust = [hover_omega, hover_throttle, manual_throttle_ff, vertical_accel_scale](float omega) {
 		const float ratio = omega / hover_omega;
 		return math::constrain((hover_throttle * vertical_accel_scale * ratio * ratio) + manual_throttle_ff, 0.0f, 1.0f);
 	};
 
+	// 偏航前馈通过两组电机反向差动实现。
 	motor_speed.control[0] = math::constrain(omega_to_normalized_thrust(motor_1) + manual_yaw_ff, 0.0f, 1.0f);
 	motor_speed.control[1] = math::constrain(omega_to_normalized_thrust(motor_2) + manual_yaw_ff, 0.0f, 1.0f);
 	motor_speed.control[2] = math::constrain(omega_to_normalized_thrust(motor_3) - manual_yaw_ff, 0.0f, 1.0f);
@@ -982,5 +994,6 @@ int FullvectorControl::print_usage(const char *reason)
 
 extern "C" __EXPORT int fullvector_control_main(int argc, char *argv[])
 {
+	// C 链接入口，供 PX4 模块加载器按模块名调用。
 	return FullvectorControl::main(argc, argv);
 }
