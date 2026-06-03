@@ -67,7 +67,9 @@
 #include <uORB/topics/vehicle_angular_acceleration_setpoint.h>
 #include <uORB/topics/takeoff_status.h>
 #include <uORB/topics/vehicle_land_detected.h>
-#include <uORB/topics/manual_control_setpoint.h>
+// 订阅 PX4 当前飞行模式和轨迹目标，用于在自稳、定高、定点及其他模式下接管控制。
+#include <uORB/topics/trajectory_setpoint.h>
+#include <uORB/topics/vehicle_status.h>
 
 // Publications
 #include <uORB/topics/actuator_motors.h>
@@ -140,7 +142,6 @@ private:
 	void parameters_update(bool force);
 	void resetPidState();
 	void publishSafeActuatorFallback();
-	void publishManualActuatorFallback(float stick_roll, float stick_pitch, float stick_yaw, float stick_throttle);
 
 	bool updateUAVState();
 
@@ -148,7 +149,7 @@ private:
 	perf_counter_t _loop_perf{perf_alloc(PC_ELAPSED, MODULE_NAME": loop")};
 
 	DEFINE_PARAMETERS(
-		(ParamInt<px4::params::FV_ENABLE>) _param_fv_enable,
+		(ParamBool<px4::params::FV_ENABLE>) _param_fv_enable,
 		(ParamInt<px4::params::PRINT_A_EN>) _param_print_msg_a_en,
 		(ParamFloat<px4::params::PRINT_NUM_VALUE>) _param_print_num_value,
 		(ParamFloat<px4::params::FV_POS_P_X>)             _param_fv_pos_p_x,
@@ -193,19 +194,10 @@ private:
 		(ParamFloat<px4::params::FV_K_F>)		  _param_fv_K_F,
 		(ParamFloat<px4::params::FV_K_M>)		  _param_fv_K_M,
 		(ParamFloat<px4::params::FV_HOVER_THR>)		  _param_fv_hover_thr,
-		(ParamFloat<px4::params::FV_MAN_THR_FF>)	  _param_fv_man_thr_ff,
-		(ParamFloat<px4::params::FV_MAN_TILT_FF>)	  _param_fv_man_tilt_ff,
-		(ParamFloat<px4::params::FV_MAN_YAW_FF>)	  _param_fv_man_yaw_ff,
 		(ParamFloat<px4::params::FV_INERTIA_XX>)          _param_fv_inertia_xx,
 		(ParamFloat<px4::params::FV_INERTIA_YY>)          _param_fv_inertia_yy,
 		(ParamFloat<px4::params::FV_INERTIA_ZZ>)	  _param_fv_inertia_zz,
-		(ParamFloat<px4::params::FV_J_RP>)		  _param_fv_J_RP,
-		(ParamFloat<px4::params::FV_TARGET_X>)		  _param_fv_target_x,
-		(ParamFloat<px4::params::FV_TARGET_Y>)		  _param_fv_target_y,
-		(ParamFloat<px4::params::FV_TARGET_Z>)		  _param_fv_target_z,
-		(ParamFloat<px4::params::FV_TARGET_PITCH>)	  _param_fv_target_pitch,
-		(ParamFloat<px4::params::FV_TARGET_YAW>)	  _param_fv_target_yaw,
-		(ParamFloat<px4::params::FV_TARGET_ROLL>)	  _param_fv_target_roll
+		(ParamFloat<px4::params::FV_J_RP>)		  _param_fv_J_RP
 	)
 
 	// Publications
@@ -221,19 +213,24 @@ private:
 	uORB::Subscription _vehicle_attitude_sub{ORB_ID(vehicle_attitude)};
 	uORB::Subscription _vehicle_angular_velocity_sub{ORB_ID(vehicle_angular_velocity)};
 	uORB::Subscription _vehicle_control_mode_sub{ORB_ID(vehicle_control_mode)};
+	// vehicle_status 提供 nav_state，便于识别终止模式和当前飞行模式。
+	uORB::Subscription _vehicle_status_sub{ORB_ID(vehicle_status)};
+	// trajectory_setpoint 是 PX4 上层模式管理生成的位置/速度/航向目标。
+	uORB::Subscription _trajectory_setpoint_sub{ORB_ID(trajectory_setpoint)};
 	uORB::SubscriptionInterval _parameter_update_sub{ORB_ID(parameter_update), 1_s};
 	uORB::Subscription _vehicle_thrust_setpoint_sub{ORB_ID(vehicle_thrust_setpoint)};
 	uORB::Subscription _actuator_motors_sub{ORB_ID(actuator_motors)};
 	uORB::Subscription _takeoff_status_sub{ORB_ID(takeoff_status)};
 	uORB::Subscription _vehicle_land_detected_sub{ORB_ID(vehicle_land_detected)};
-	uORB::Subscription _manual_control_setpoint_sub{ORB_ID(manual_control_setpoint)};
 
 	// State variables
 	vehicle_local_position_s _position{};
 	vehicle_attitude_s _attitude{};
-    	vehicle_angular_velocity_s _angular_velocity{};
+	vehicle_angular_velocity_s _angular_velocity{};
 	vehicle_control_mode_s _control_mode{};
-	manual_control_setpoint_s _manual_control_setpoint{};
+	// 缓存最新飞行状态和轨迹目标，Run() 中统一转换为 fullvector 控制器命令。
+	vehicle_status_s _vehicle_status{};
+	trajectory_setpoint_s _trajectory_setpoint{};
 
 	// PID 参数矩阵
 	Matrix3f gain_pos_pid{};
@@ -277,10 +274,6 @@ private:
 	float motor_2{0.0f};
 	float motor_3{0.0f};
 	float motor_4{0.0f};
-	float _manual_roll_input{0.0f};
-	float _manual_pitch_input{0.0f};
-	float _manual_yaw_input{0.0f};
-	float _manual_throttle_input{0.0f};
 
 	// 串级PID中间状态：外环位置、内环速度
 	Vector3f _pos_error_int{};

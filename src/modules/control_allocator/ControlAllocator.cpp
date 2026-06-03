@@ -335,6 +335,7 @@ ControlAllocator::Run()
 		if (_vehicle_status_sub.update(&vehicle_status)) {
 
 			_armed = vehicle_status.arming_state == vehicle_status_s::ARMING_STATE_ARMED;
+			_nav_state = vehicle_status.nav_state;
 
 			ActuatorEffectiveness::FlightPhase flight_phase{ActuatorEffectiveness::FlightPhase::HOVER_FLIGHT};
 
@@ -643,7 +644,11 @@ ControlAllocator::publish_control_allocator_status(int matrix_index)
 void
 ControlAllocator::publish_actuator_controls()
 {
-	if (_fv_enable == 1) {
+	const bool fullvector_controls_actuators = (_fv_enable == 1)
+			&& ((_nav_state == vehicle_status_s::NAVIGATION_STATE_POSCTL)
+			    || (_nav_state == vehicle_status_s::NAVIGATION_STATE_OFFBOARD));
+
+	if (fullvector_controls_actuators) {
 		return;
 	}
 
@@ -684,24 +689,16 @@ ControlAllocator::publish_actuator_controls()
 
 	_actuator_motors_pub.publish(actuator_motors);
 
-	// servos
-	if (_num_actuators[1] > 0) {
-		int servos_idx;
-
-		for (servos_idx = 0; servos_idx < _num_actuators[1] && servos_idx < actuator_servos_s::NUM_CONTROLS; servos_idx++) {
-			int selected_matrix = _control_allocation_selection_indexes[actuator_idx];
-			float actuator_sp = _control_allocation[selected_matrix]->getActuatorSetpoint()(actuator_idx_matrix[selected_matrix]);
-			actuator_servos.control[servos_idx] = PX4_ISFINITE(actuator_sp) ? actuator_sp : NAN;
-			++actuator_idx_matrix[selected_matrix];
-			++actuator_idx;
-		}
-
-		for (int i = servos_idx; i < actuator_servos_s::NUM_CONTROLS; i++) {
-			actuator_servos.control[i] = NAN;
-		}
-
-		_actuator_servos_pub.publish(actuator_servos);
+	// Outside the fullvector takeover modes, keep the four tilt servos locked at neutral.
+	for (int i = 0; i < actuator_servos_s::NUM_CONTROLS; i++) {
+		actuator_servos.control[i] = NAN;
 	}
+
+	for (int i = 0; i < 4 && i < actuator_servos_s::NUM_CONTROLS; i++) {
+		actuator_servos.control[i] = 0.0f;
+	}
+
+	_actuator_servos_pub.publish(actuator_servos);
 }
 
 void

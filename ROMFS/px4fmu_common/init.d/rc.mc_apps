@@ -54,17 +54,12 @@ fi
 control_allocator start
 
 #
-# Start Fullvector controller if the FV_ENABLE parameter exists. The controller
-# remains silent while FV_ENABLE=0, and takes over actuator output when enabled.
+# Start Fullvector controller if enabled. The module remains silent outside
+# POSCTL/OFFBOARD so PX4 native controllers own the other flight modes.
 #
-if param compare -s FV_ENABLE 0
+if param compare -s FV_ENABLE 1
 then
 	fullvector_control start
-else
-	if param compare -s FV_ENABLE 1
-	then
-		fullvector_control start
-	fi
 fi
 
 #

@@ -539,42 +539,6 @@ parameters:
             Normalized actuator_motors output corresponding to the internally
             computed hover angular speed.
 
-      FV_MAN_THR_FF:
-        type: float
-        default: 0.35
-        decimal: 3
-        min: 0.0
-        max: 0.8
-        description:
-          short: Manual throttle feed-forward
-          long: |
-            Direct normalized motor thrust offset applied from the manual
-            throttle stick, so PWM changes immediately during bench checks.
-
-      FV_MAN_TILT_FF:
-        type: float
-        default: 0.7
-        decimal: 3
-        min: 0.0
-        max: 1.0
-        description:
-          short: Manual tilt feed-forward
-          long: |
-            Direct normalized tilt-servo offset applied from manual roll and
-            pitch sticks, so tilt PWM changes immediately during bench checks.
-
-      FV_MAN_YAW_FF:
-        type: float
-        default: 0.2
-        decimal: 3
-        min: 0.0
-        max: 0.5
-        description:
-          short: Manual yaw feed-forward
-          long: |
-            Direct normalized differential motor thrust applied from the manual
-            yaw stick. Motors 1/2 and 3/4 move in opposite directions.
-
       FV_INERTIA_XX:
         type: float
         default: 0.05892
@@ -627,81 +591,6 @@ parameters:
             Combined rotational inertia of the rotor and propeller about its spin axis.
             Used for gyroscopic effect modelling.
 
-      FV_TARGET_X:
-        type: float
-        default: 0.0
-        decimal: 3
-        min: -100.0
-        max: 100.0
-        unit: m
-        description:
-          short: Parameter target X (NED local)
-          long: |
-            X position setpoint used by fullvector_control.
-            This module does not subscribe to trajectory_setpoint.
-
-      FV_TARGET_Y:
-        type: float
-        default: 0.0
-        decimal: 3
-        min: -100.0
-        max: 100.0
-        unit: m
-        description:
-          short: Parameter target Y (NED local)
-          long: |
-            Y position setpoint used by fullvector_control.
-            This module does not subscribe to trajectory_setpoint.
-
-      FV_TARGET_Z:
-        type: float
-        default: -3.0
-        decimal: 3
-        min: -100.0
-        max: 100.0
-        unit: m
-        description:
-          short: Parameter target Z (NED local)
-          long: |
-            Z position setpoint used by fullvector_control.
-            This module does not subscribe to trajectory_setpoint.
-
-      FV_TARGET_ROLL:
-        type: float
-        default: 0.0
-        decimal: 3
-        min: -3.141593
-        max: 3.141593
-        unit: rad
-        description:
-          short: Parameter target roll
-          long: |
-            Roll setpoint used by fullvector_control.
-
-      FV_TARGET_PITCH:
-        type: float
-        default: 0.0
-        decimal: 3
-        min: -3.141593
-        max: 3.141593
-        unit: rad
-        description:
-          short: Parameter target pitch
-          long: |
-            Pitch setpoint used by fullvector_control.
-
-      FV_TARGET_YAW:
-        type: float
-        default: 0.0
-        decimal: 3
-        min: -3.141593
-        max: 3.141593
-        unit: rad
-        description:
-          short: Parameter target yaw
-          long: |
-            Yaw setpoint used by fullvector_control.
-
       FV_ENABLE:
         type: boolean
         default: 1
@@ -710,4 +599,5 @@ parameters:
           long: |
             Enable/disable fullvectormetric control output publishing.
             Control output is published only when this parameter is enabled,
-            the vehicle is armed, and position control is active.
+            the vehicle is armed, and the current navigation state is explicitly
+            allowed by fullvector_control.

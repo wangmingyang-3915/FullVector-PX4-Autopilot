@@ -34,3 +34,7 @@
 px4_add_library(arch_board_critmon
 	board_critmon.c
 )
+
+target_include_directories(arch_board_critmon PRIVATE
+	${PX4_SOURCE_DIR}/platforms/nuttx/NuttX/nuttx/arch/arm/src/armv7-m
+)

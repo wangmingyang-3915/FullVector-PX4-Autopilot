@@ -197,6 +197,7 @@ private:
 	perf_counter_t	_loop_perf;			/**< loop duration performance counter */
 
 	bool _armed{false};
+	uint8_t _nav_state{vehicle_status_s::NAVIGATION_STATE_MAX};
 	hrt_abstime _last_run{0};
 	hrt_abstime _timestamp_sample{0};
 	hrt_abstime _last_status_pub{0};
