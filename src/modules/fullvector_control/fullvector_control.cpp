@@ -301,7 +301,7 @@ void FullvectorControl::Run()
 		return;
 	}
 
-	// 控制器按 10 ms 周期运行，即使本周期没有输出也保持调度。
+	// 控制器按 5 ms 周期运行，即使本周期没有输出也保持调度。
 	ScheduleDelayed(5_ms);
 
 	parameters_update(false);
