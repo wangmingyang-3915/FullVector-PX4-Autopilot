@@ -362,9 +362,9 @@ void FullvectorControl::Run()
 
 	_controller_was_active = true;
 
-	// 计算本次控制周期 dt，首次运行时使用名义 10 ms。
+	// 计算本次控制周期 dt，首次运行时使用名义 5 ms。
 	if (_last_run_time == 0) {
-		_dt = 0.01f;
+		_dt = 0.005f;
 
 	} else {
 		_dt = (now - _last_run_time) / 1e6f;
@@ -592,7 +592,7 @@ void FullvectorControl::PositionControl(const UAVStates & state, const UAVComman
 	_pos_error_prev = ep;
 	_vel_error_prev = ev;
 
-	// 发布位置控制器的加速度输出，便于其他模块或日志观察。
+	// 发布位置控制器的输出，便于其他模块调用或日志查验。
 	vehicle_local_position_setpoint_s position_controller_output{};
 	position_controller_output.timestamp = hrt_absolute_time();
 	position_controller_output.acceleration[0] = acc_cmd(0);
@@ -668,7 +668,7 @@ void FullvectorControl::AttitudeControl(const UAVStates & state, UAVCommand & co
 	_att_error_prev = e_att;
 	_ang_vel_error_prev = e_w;
 
-	// 发布姿态控制器的角加速度输出，便于观察控制链路。
+	// 发布姿态控制器的输出，便于观察控制链路。
 	vehicle_angular_acceleration_setpoint_s attitude_controller_output{};
 	attitude_controller_output.timestamp_sample = hrt_absolute_time();
 	attitude_controller_output.timestamp = hrt_absolute_time();
@@ -692,7 +692,7 @@ void FullvectorControl::calculateMotorCommand(const UAVCommand & command)
 	const float psi_sp = command.Euler_angles(2);
 	(void)psi_sp;
 
-	// 使用前级位置环输出的加速度和姿态环输出的角加速度。
+	// 使用前级位置环输出和姿态环输出。
 	const Vector3f &acc_sp = _pos_acc_cmd;
 	const Vector3f &ang_acc_sp = _att_ang_acc_cmd;
 	constexpr float tilt_angle_max_rad = 0.52f;
@@ -715,10 +715,10 @@ void FullvectorControl::calculateMotorCommand(const UAVCommand & command)
 
 	// 将姿态角加速度和垂向加速度叠加到四个电机角速度命令。
 	// 电机编号：1=右前，2=左后，3=左前，4=右后；偏航按 1/2 与 3/4 反向差动。
-	motor_1 = base_thrust - ang_acc_sp(0) + ang_acc_sp(1) + ang_acc_sp(2) + acc_sp(2);
-	motor_2 = base_thrust + ang_acc_sp(0) - ang_acc_sp(1) + ang_acc_sp(2) + acc_sp(2);
-	motor_3 = base_thrust + ang_acc_sp(0) + ang_acc_sp(1) - ang_acc_sp(2) + acc_sp(2);
-	motor_4 = base_thrust - ang_acc_sp(0) - ang_acc_sp(1) - ang_acc_sp(2) + acc_sp(2);
+	motor_1 = base_thrust - ang_acc_sp(0) + ang_acc_sp(1) + ang_acc_sp(2) - acc_sp(2);
+	motor_2 = base_thrust + ang_acc_sp(0) - ang_acc_sp(1) + ang_acc_sp(2) - acc_sp(2);
+	motor_3 = base_thrust + ang_acc_sp(0) + ang_acc_sp(1) - ang_acc_sp(2) - acc_sp(2);
+	motor_4 = base_thrust - ang_acc_sp(0) - ang_acc_sp(1) - ang_acc_sp(2) - acc_sp(2);
 
 	// 限制电机角速度，防止负值或超过设定上限。
 	constexpr float motor_speed_max = 20000.0f;
@@ -856,8 +856,8 @@ void FullvectorControl::controlAllocation(const UAVStates & state, const UAVComm
 			  + K_F * m3_sq * arm_d * cosf(alpha_offset3)
 			  - K_F * m4_sq * arm_d * cosf(alpha_offset4) + Qy;
 	const float tau_z = -K_F * m1_sq * distance * sinf(alpha_offset1)
-			  + K_F * m2_sq * distance * sinf(alpha_offset2)
-			  + K_F * m3_sq * distance * sinf(alpha_offset3)
+			  - K_F * m2_sq * distance * sinf(alpha_offset2)
+			  - K_F * m3_sq * distance * sinf(alpha_offset3)
 			  - K_F * m4_sq * distance * sinf(alpha_offset4) + Qz;
 
 	// 欧拉刚体动力学：由力矩、惯量和转子陀螺项计算角加速度。
