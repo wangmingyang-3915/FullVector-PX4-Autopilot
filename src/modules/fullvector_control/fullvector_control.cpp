@@ -697,11 +697,22 @@ void FullvectorControl::calculateMotorCommand(const UAVCommand & command)
 	const Vector3f &ang_acc_sp = _att_ang_acc_cmd;
 	constexpr float tilt_angle_max_rad = 0.52f;
 
+	// 根据悬停推力估算基础电机角速度，K_F 太小时做保护。
+	const float kf_safe = math::max(K_F, 1e-6f);
+	const float mass_safe = math::max(mass, 1e-3f);
+	const float gravity_safe = math::max(gravity, 1e-3f);
+	const float distance_safe = math::max(distance, 1e-3f);
+	const float arm_d = distance_safe / sqrtf(2.0f);
+	const float I_xx = math::max(inertia(0, 0), 1e-6f);
+	const float I_yy = math::max(inertia(1, 1), 1e-6f);
+	const float I_zz = math::max(inertia(2, 2), 1e-6f);
+	const float base_thrust = sqrtf((mass_safe * gravity_safe) / (4.0f * kf_safe));
+
 	// 根据期望姿态和水平加速度计算四个电机的倾转角偏置。
-	alpha_offset1 =  sqrtf(2.0f)*phi_sp + sqrtf(2.0f)*theta_sp + (acc_sp(0) - acc_sp(1)) / 4.0f;
-	alpha_offset2 = -sqrtf(2.0f)*phi_sp - sqrtf(2.0f)*theta_sp - (acc_sp(0) - acc_sp(1)) / 4.0f;
-	alpha_offset3 = -sqrtf(2.0f)*phi_sp + sqrtf(2.0f)*theta_sp - (acc_sp(0) + acc_sp(1)) / 4.0f;
-	alpha_offset4 =  sqrtf(2.0f)*phi_sp - sqrtf(2.0f)*theta_sp + (acc_sp(0) + acc_sp(1)) / 4.0f;
+	alpha_offset1 =  sqrtf(2.0f)*phi_sp + sqrtf(2.0f)*theta_sp + mass_safe * (acc_sp(0) - acc_sp(1)) / 4.0f;
+	alpha_offset2 = -sqrtf(2.0f)*phi_sp - sqrtf(2.0f)*theta_sp - mass_safe * (acc_sp(0) - acc_sp(1)) / 4.0f;
+	alpha_offset3 = -sqrtf(2.0f)*phi_sp + sqrtf(2.0f)*theta_sp - mass_safe * (acc_sp(0) + acc_sp(1)) / 4.0f;
+	alpha_offset4 =  sqrtf(2.0f)*phi_sp - sqrtf(2.0f)*theta_sp + mass_safe * (acc_sp(0) + acc_sp(1)) / 4.0f;
 
 	// 限制倾转角，避免指令超过机构允许范围。
 	alpha_offset1 = math::constrain(alpha_offset1, -tilt_angle_max_rad, tilt_angle_max_rad);
@@ -709,16 +720,23 @@ void FullvectorControl::calculateMotorCommand(const UAVCommand & command)
 	alpha_offset3 = math::constrain(alpha_offset3, -tilt_angle_max_rad, tilt_angle_max_rad);
 	alpha_offset4 = math::constrain(alpha_offset4, -tilt_angle_max_rad, tilt_angle_max_rad);
 
-	// 根据悬停推力估算基础电机角速度，K_F 太小时做保护。
-	const float kf_safe = math::max(K_F, 1e-6f);
-	const float base_thrust = sqrtf((mass * gravity) / (4.0f * kf_safe));
+
+	const auto signed_sqrt = [](float value) {
+		return (value >= 0.0f) ? sqrtf(value) : -sqrtf(fabsf(value));
+	};
+
+	// 计算期望力矩和力对应的角速度。
+	const float w_roll = signed_sqrt((I_xx * ang_acc_sp(0)) / (4.0f * kf_safe * arm_d));
+	const float w_pitch = signed_sqrt((I_yy * ang_acc_sp(1)) / (4.0f * kf_safe * arm_d));
+	const float w_yaw = signed_sqrt((I_zz * ang_acc_sp(2)) / (4.0f * kf_safe * distance_safe));
+	const float w_fz = signed_sqrt((mass_safe * (gravity_safe - acc_sp(2))) / (4.0f * kf_safe));
 
 	// 将姿态角加速度和垂向加速度叠加到四个电机角速度命令。
 	// 电机编号：1=右前，2=左后，3=左前，4=右后；偏航按 1/2 与 3/4 反向差动。
-	motor_1 = base_thrust - ang_acc_sp(0) + ang_acc_sp(1) + ang_acc_sp(2) - acc_sp(2);
-	motor_2 = base_thrust + ang_acc_sp(0) - ang_acc_sp(1) + ang_acc_sp(2) - acc_sp(2);
-	motor_3 = base_thrust + ang_acc_sp(0) + ang_acc_sp(1) - ang_acc_sp(2) - acc_sp(2);
-	motor_4 = base_thrust - ang_acc_sp(0) - ang_acc_sp(1) - ang_acc_sp(2) - acc_sp(2);
+	motor_1 = -w_roll + w_pitch + w_yaw + w_fz;
+	motor_2 =  w_roll - w_pitch + w_yaw + w_fz;
+	motor_3 =  w_roll + w_pitch - w_yaw + w_fz;
+	motor_4 = -w_roll - w_pitch - w_yaw + w_fz;
 
 	// 限制电机角速度，防止负值或超过设定上限。
 	constexpr float motor_speed_max = 20000.0f;
@@ -739,12 +757,10 @@ void FullvectorControl::calculateMotorCommand(const UAVCommand & command)
 
 	const float hover_omega = math::max(base_thrust, 1.0f);
 	const float hover_throttle = math::constrain(_param_fv_hover_thr.get(), 0.05f, 0.95f);
-	// 垂向加速度指令改变总推力需求，这里转换为悬停油门附近的缩放系数。
-	const float vertical_accel_scale = math::constrain(1.0f - (_pos_acc_cmd(2) / math::max(gravity, 1.0f)), 0.2f, 2.0f);
 	// omega 与推力近似满足平方关系，先相对悬停角速度归一化。
-	const auto omega_to_normalized_thrust = [hover_omega, hover_throttle, vertical_accel_scale](float omega) {
+	const auto omega_to_normalized_thrust = [hover_omega, hover_throttle](float omega) {
 		const float ratio = omega / hover_omega;
-		return math::constrain(hover_throttle * vertical_accel_scale * ratio * ratio, 0.0f, 1.0f);
+		return math::constrain(hover_throttle * ratio * ratio, 0.0f, 1.0f);
 	};
 
 	motor_speed.control[0] = omega_to_normalized_thrust(motor_1);
