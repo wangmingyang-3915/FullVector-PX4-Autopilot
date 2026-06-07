@@ -1,0 +1,5 @@
+# An ASCII register name.
+
+uint8[<=50] name
+
+@assert _offset_ % 8 == {0}

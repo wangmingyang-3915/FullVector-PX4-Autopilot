@@ -1,0 +1,2 @@
+float32 newton
+uavcan.time.SynchronizedTimestamp.1.0 timestamp

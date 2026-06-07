@@ -144,6 +144,11 @@ if (os.path.exists('src/modules/mavlink/mavlink/.git')):
 #define MAVLINK_LIB_GIT_VERSION_STR  "{mavlink_git_version}"
 #define MAVLINK_LIB_GIT_VERSION_BINARY 0x{mavlink_git_version_short}
 """
+else:
+    header += """
+#define MAVLINK_LIB_GIT_VERSION_STR  "vendored"
+#define MAVLINK_LIB_GIT_VERSION_BINARY 0x0000000000000000
+"""
 
 
 # NuttX
@@ -160,6 +165,12 @@ if (os.path.exists('platforms/nuttx/NuttX/nuttx/.git')):
 #define NUTTX_GIT_VERSION_STR  "{nuttx_git_version}"
 #define NUTTX_GIT_VERSION_BINARY 0x{nuttx_git_version_short}
 #define NUTTX_GIT_TAG_STR  "{nuttx_git_tag}"
+"""
+else:
+    header += """
+#define NUTTX_GIT_VERSION_STR  "vendored"
+#define NUTTX_GIT_VERSION_BINARY 0x0000000000000000
+#define NUTTX_GIT_TAG_STR  "v10.3.0"
 """
 
 

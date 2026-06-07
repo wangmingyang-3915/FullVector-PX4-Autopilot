@@ -81,7 +81,7 @@ function(px4_add_git_submodule)
 	add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/git_init_${NAME}.stamp
 		COMMAND Tools/check_submodules.sh ${REL_PATH}
 		COMMAND ${CMAKE_COMMAND} -E touch ${CMAKE_CURRENT_BINARY_DIR}/git_init_${NAME}.stamp
-		DEPENDS ${PX4_SOURCE_DIR}/.gitmodules ${PATH}/.git
+		DEPENDS ${PX4_SOURCE_DIR}/.gitmodules
 		COMMENT "git submodule ${REL_PATH}"
 		WORKING_DIRECTORY ${PX4_SOURCE_DIR}
 		USES_TERMINAL

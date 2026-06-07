@@ -1,0 +1,20 @@
+Language: Cpp
+BasedOnStyle: Mozilla
+IndentWidth: 4
+ColumnLimit: 120
+Standard: c++20
+IndentExternBlock: NoIndent
+AlwaysBreakAfterDefinitionReturnType: None
+BreakAfterReturnType: None
+AllowShortFunctionsOnASingleLine: All
+AlignConsecutiveAssignments: true
+AlignConsecutiveBitFields: true
+AlignConsecutiveDeclarations: true
+AlignConsecutiveMacros: true
+AlignConsecutiveShortCaseStatements: { Enabled: true }
+AlignEscapedNewlines: LeftWithLastLine
+AlignTrailingComments: true
+SortIncludes: false
+ForEachMacros:
+  - FOREACH_IFACE
+  - FOREACH_PRIO

@@ -1,0 +1,159 @@
+name: Verification & Static Analysis
+on: [push, pull_request]
+env:
+  LLVM_VERSION: 20
+jobs:
+  debug:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        toolchain: ["clang", "gcc"]
+        include:
+          - toolchain: gcc
+            c-compiler: gcc
+            cxx-compiler: g++
+          - toolchain: clang
+            c-compiler: clang
+            cxx-compiler: clang++
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: true
+      - run: |
+          wget https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh $LLVM_VERSION
+          sudo apt-get update -y && sudo apt-get upgrade -y
+          sudo apt-get -y install gcc-multilib g++-multilib clang-tidy-$LLVM_VERSION clang-format-$LLVM_VERSION cppcheck
+          sudo update-alternatives --install /usr/bin/clang-tidy clang-tidy /usr/bin/clang-tidy-$LLVM_VERSION 50
+          sudo update-alternatives --install /usr/bin/clang-format clang-format /usr/bin/clang-format-$LLVM_VERSION 50
+          sudo update-alternatives --set clang-tidy /usr/bin/clang-tidy-$LLVM_VERSION
+          sudo update-alternatives --set clang-format /usr/bin/clang-format-$LLVM_VERSION
+          clang-tidy --version
+          clang-format --version
+      - run: >
+          cmake
+          -B ${{ github.workspace }}/build
+          -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_C_COMPILER=${{ matrix.c-compiler }}
+          -DCMAKE_CXX_COMPILER=${{ matrix.cxx-compiler }}
+          .
+      - working-directory: ${{github.workspace}}/build
+        run: |
+          make VERBOSE=1
+          make test
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: ${{github.job}}-#${{strategy.job-index}}-${{job.status}}-${{join(matrix.*, ',')}}
+          path: ${{github.workspace}}/**/*
+          retention-days: 7
+          include-hidden-files: true
+
+  optimizations:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        toolchain: ["clang", "gcc"]
+        build_type: [Release, MinSizeRel]
+        include:
+          - toolchain: gcc
+            c-compiler: gcc
+            cxx-compiler: g++
+          - toolchain: clang
+            c-compiler: clang
+            cxx-compiler: clang++
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: true
+      - run: |
+          sudo apt-get update -y && sudo apt-get upgrade -y
+          sudo apt-get install gcc-multilib g++-multilib
+      - run: >
+          cmake
+          -B ${{ github.workspace }}/build
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          -DCMAKE_C_COMPILER=${{ matrix.c-compiler }}
+          -DCMAKE_CXX_COMPILER=${{ matrix.cxx-compiler }}
+          -DNO_STATIC_ANALYSIS=1
+          .
+      - working-directory: ${{github.workspace}}/build
+        run: |
+          make VERBOSE=1
+          make test
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: ${{github.job}}-#${{strategy.job-index}}-${{job.status}}-${{join(matrix.*, ',')}}
+          path: ${{github.workspace}}/**/*
+          retention-days: 7
+          include-hidden-files: true
+
+  coverage:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: true
+      - run: |
+          sudo apt-get update -y && sudo apt-get upgrade -y
+          sudo apt-get install -y gcc-multilib g++-multilib lcov
+          pip install --break-system-packages gcovr
+      - run: >
+          cmake
+          -B ${{ github.workspace }}/build
+          -DCMAKE_BUILD_TYPE=Debug
+          -DNO_STATIC_ANALYSIS=1
+          -DENABLE_COVERAGE=ON
+          .
+      - working-directory: ${{ github.workspace }}/build
+        run: |
+          make -j$(nproc)
+          make test
+          make coverage
+      # Export Cobertura report for Coveralls, tracking only libcanard/canard.c.
+      - run: |
+          cd "${{ github.workspace }}/build"
+          gcovr \
+            --root "${{ github.workspace }}" \
+            --filter '.*/libcanard/canard\.c$' \
+            --xml-pretty \
+            --output "${{ github.workspace }}/build/coverage-canard.cobertura.xml" \
+            --print-summary
+      - id: coveralls_upload
+        uses: coverallsapp/github-action@v2
+        continue-on-error: true
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          file: build/coverage-canard.cobertura.xml
+          format: cobertura
+      - if: ${{ steps.coveralls_upload.outcome == 'failure' }}
+        run: |
+          echo "::warning::Coveralls upload failed (likely Coveralls API issue). Continuing without failing CI."
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: ${{ github.job }}-coverage-report
+          path: ${{ github.workspace }}/build/coverage-html
+          retention-days: 30
+
+  arm:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    env:
+      flags: >
+        -Wall -Wextra -Werror -pedantic -Wconversion -Wtype-limits -Wcast-align -Wfatal-errors
+        -Wno-error=unused-function
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: true
+      - run: |
+          sudo apt-get update -y && sudo apt-get upgrade -y
+          sudo apt-get install -y gcc-arm-none-eabi
+      - run: arm-none-eabi-gcc libcanard/*.c -isystem lib/cavl2 -c -std=c99 ${{ env.flags }}
+      - run: arm-none-eabi-gcc libcanard/*.c -isystem lib/cavl2 -c -std=c11 ${{ env.flags }}

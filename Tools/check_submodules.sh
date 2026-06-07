@@ -50,6 +50,10 @@ if [[ -f $1"/.git" || -d $1"/.git" ]]; then
 		fi
 	fi
 else
+	if [[ -d "$1" ]] && [[ -n "$(ls -A "$1" 2>/dev/null)" ]]; then
+		exit 0
+	fi
+
 	git submodule --quiet sync --recursive --quiet -- $1
 	git submodule --quiet update --init --recursive -- $1  || true
 	git submodule --quiet sync --recursive --quiet -- $1
