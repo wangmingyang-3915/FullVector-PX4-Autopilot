@@ -708,11 +708,14 @@ void FullvectorControl::calculateMotorCommand(const UAVCommand & command)
 	const float I_zz = math::max(inertia(2, 2), 1e-6f);
 	const float base_thrust = sqrtf((mass_safe * gravity_safe) / (4.0f * kf_safe));
 
+	//力到倾角的转换系数
+	const float acc_to_tilt = sqrtf(2.0f) / (mass_safe * gravity_safe);
+
 	// 根据姿态目标和水平加速度指令计算四个电机的倾转角偏置。
-	alpha_offset1 =  sqrtf(2.0f)*phi_sp + sqrtf(2.0f)*theta_sp + mass_safe * (acc_sp(0) - acc_sp(1)) / 4.0f;
-	alpha_offset2 = -sqrtf(2.0f)*phi_sp - sqrtf(2.0f)*theta_sp - mass_safe * (acc_sp(0) - acc_sp(1)) / 4.0f;
-	alpha_offset3 = -sqrtf(2.0f)*phi_sp + sqrtf(2.0f)*theta_sp - mass_safe * (acc_sp(0) + acc_sp(1)) / 4.0f;
-	alpha_offset4 =  sqrtf(2.0f)*phi_sp - sqrtf(2.0f)*theta_sp + mass_safe * (acc_sp(0) + acc_sp(1)) / 4.0f;
+	alpha_offset1 =  sqrtf(2.0f)*phi_sp + sqrtf(2.0f)*theta_sp + acc_to_tilt * mass_safe * (acc_sp(0) - acc_sp(1)) / 4.0f;
+	alpha_offset2 = -sqrtf(2.0f)*phi_sp - sqrtf(2.0f)*theta_sp - acc_to_tilt * mass_safe * (acc_sp(0) - acc_sp(1)) / 4.0f;
+	alpha_offset3 = -sqrtf(2.0f)*phi_sp + sqrtf(2.0f)*theta_sp - acc_to_tilt * mass_safe * (acc_sp(0) + acc_sp(1)) / 4.0f;
+	alpha_offset4 =  sqrtf(2.0f)*phi_sp - sqrtf(2.0f)*theta_sp + acc_to_tilt * mass_safe * (acc_sp(0) + acc_sp(1)) / 4.0f;
 
 	// 限制倾转角，避免指令超过机构允许范围。
 	alpha_offset1 = math::constrain(alpha_offset1, -tilt_angle_max_rad, tilt_angle_max_rad);
