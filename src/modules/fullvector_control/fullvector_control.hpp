@@ -34,7 +34,7 @@
 /**
  * @file fullvector_control_main.hpp
  *
- * Parameter description and header file definition for the full-vector quadcopter controller module
+ * Full-vector quadcopter controller declarations, uORB interfaces and tunable parameters.
  *
  * @author Mingyang Wang <3112311639@qq.com>
  */
@@ -67,7 +67,7 @@
 #include <uORB/topics/vehicle_angular_acceleration_setpoint.h>
 #include <uORB/topics/takeoff_status.h>
 #include <uORB/topics/vehicle_land_detected.h>
-// 订阅 PX4 当前飞行模式和轨迹目标，用于在自稳、定高、定点及其他模式下接管控制。
+// 订阅 PX4 当前飞行模式和轨迹目标；模块只在 Run() 中允许的模式下发布 fullvector 输出。
 #include <uORB/topics/trajectory_setpoint.h>
 #include <uORB/topics/vehicle_status.h>
 
@@ -78,22 +78,22 @@
 using namespace time_literals;
 using namespace matrix;
 
-// 主机无人机状态结构体
+// 控制器使用的状态缓存，来自 PX4 估计器发布的 uORB 话题。
 struct UAVStates {
-	Vector3f position;			// 位置
-	Vector3f velocity;                      // 速度
-	Vector3f Euler_angles;          	// 欧拉角（roll, pitch, yaw）
-	Quatf attitude;                         // 四元数姿态
-	Vector3f angular_velocity;              // 角速度
+	Vector3f position;			// NED 位置，单位 m。
+	Vector3f velocity;                      // NED 速度，单位 m/s。
+	Vector3f Euler_angles;          	// 当前欧拉角（roll, pitch, yaw），由四元数换算。
+	Quatf attitude;                         // 当前姿态四元数。
+	Vector3f angular_velocity;              // 机体系角速度，单位 rad/s。
 };
 
-// 无人机指令结构体
+// 控制器内部命令缓存，由 trajectory_setpoint 和当前状态共同生成。
 struct UAVCommand {
-    	Vector3f position;			// 期望位置
-	Vector3f velocity;                      // 期望速度
-	Vector3f acceleration;                  // 期望加速度
-	Vector3f Euler_angles;          	// 期望欧拉角（roll, pitch, yaw）
-	Vector3f angular_velocity;              // 期望角速度
+    	Vector3f position;			// 期望 NED 位置，单位 m。
+	Vector3f velocity;                      // 期望 NED 速度，当前主要用于缓存上层轨迹目标。
+	Vector3f acceleration;                  // 期望 NED 加速度，当前主要用于缓存上层轨迹目标。
+	Vector3f Euler_angles;          	// 期望欧拉角（roll, pitch, yaw）。
+	Vector3f angular_velocity;              // 姿态外环生成的期望角速度。
 };
 
 class FullvectorControl : public ModuleBase<FullvectorControl>, public ModuleParams,
@@ -115,14 +115,14 @@ public:
 	bool init();
 
 	/**
-	 * Execute geometric position control
+	 * 执行位置/速度串级 PID，输出期望 NED 加速度。
 	 * @param state current UAV state
 	 * @param command desired command
 	 */
 	void PositionControl(const UAVStates & state, const UAVCommand & command, const float dt);
 
 	/**
-	 * Execute geometric attitude control
+	 * 执行姿态/角速度串级 PID，输出期望机体系角加速度。
 	 * @param state current UAV state
 	 * @param command desired command
 	 */
@@ -135,9 +135,8 @@ private:
 	void Run() override;
 
 	/**
-	 * Update our local parameter cache.
-	 * Parameter update can be forced when argument is true.
-	 * @param force forces parameter update.
+	 * 同步 PX4 参数系统到本模块缓存。
+	 * @param force 为 true 时即使没有 parameter_update 通知也强制刷新。
 	 */
 	void parameters_update(bool force);
 	void resetPidState();
@@ -145,7 +144,7 @@ private:
 
 	bool updateUAVState();
 
-	// Performance counter
+	// 统计 Run() 单次控制循环耗时。
 	perf_counter_t _loop_perf{perf_alloc(PC_ELAPSED, MODULE_NAME": loop")};
 
 	DEFINE_PARAMETERS(
@@ -200,22 +199,21 @@ private:
 		(ParamFloat<px4::params::FV_J_RP>)		  _param_fv_J_RP
 	)
 
-	// Publications
+	// 控制器调试输出和执行器输出。
 	uORB::Publication<vehicle_local_position_setpoint_s> _position_controller_output_pub{ORB_ID(vehicle_local_position_setpoint)};
 	uORB::Publication<vehicle_angular_acceleration_setpoint_s> _attitude_controller_output_pub{ORB_ID(vehicle_angular_acceleration_setpoint)};
-	// NOTE: current integration chain consumes raw motor omega and raw tilt angle directly.
-	// These publishers intentionally send raw physical units (not normalized actuator semantics).
+	// actuator_motors/actuator_servos 发布的是 PX4 期望的归一化输出，前四路对应四个电机和四个倾转舵机。
 	uORB::Publication<actuator_servos_s> _motor_tilt_pub_raw{ORB_ID(actuator_servos)};
 	uORB::Publication<actuator_motors_s> _motor_speed_pub_raw{ORB_ID(actuator_motors)};
 
-	// Subscriptions
+	// 控制器运行所需的状态、模式、目标和调试输入订阅。
 	uORB::Subscription _vehicle_local_position_sub{ORB_ID(vehicle_local_position)};
 	uORB::Subscription _vehicle_attitude_sub{ORB_ID(vehicle_attitude)};
 	uORB::Subscription _vehicle_angular_velocity_sub{ORB_ID(vehicle_angular_velocity)};
 	uORB::Subscription _vehicle_control_mode_sub{ORB_ID(vehicle_control_mode)};
-	// vehicle_status 提供 nav_state，便于识别终止模式和当前飞行模式。
+	// vehicle_status 提供 nav_state，用于识别 POSCTL/OFFBOARD/TERMINATION 等导航状态。
 	uORB::Subscription _vehicle_status_sub{ORB_ID(vehicle_status)};
-	// trajectory_setpoint 是 PX4 上层模式管理生成的位置/速度/航向目标。
+	// trajectory_setpoint 是 PX4 上层模式管理或 Offboard 输入生成的位置/速度/加速度/航向目标。
 	uORB::Subscription _trajectory_setpoint_sub{ORB_ID(trajectory_setpoint)};
 	uORB::SubscriptionInterval _parameter_update_sub{ORB_ID(parameter_update), 1_s};
 	uORB::Subscription _vehicle_thrust_setpoint_sub{ORB_ID(vehicle_thrust_setpoint)};
@@ -223,48 +221,48 @@ private:
 	uORB::Subscription _takeoff_status_sub{ORB_ID(takeoff_status)};
 	uORB::Subscription _vehicle_land_detected_sub{ORB_ID(vehicle_land_detected)};
 
-	// State variables
+	// 最近一次从 uORB 读取到的原始 PX4 消息。
 	vehicle_local_position_s _position{};
 	vehicle_attitude_s _attitude{};
 	vehicle_angular_velocity_s _angular_velocity{};
 	vehicle_control_mode_s _control_mode{};
-	// 缓存最新飞行状态和轨迹目标，Run() 中统一转换为 fullvector 控制器命令。
+	// 缓存最新飞行状态和轨迹目标，Run() 中统一转换为 fullvector 控制命令。
 	vehicle_status_s _vehicle_status{};
 	trajectory_setpoint_s _trajectory_setpoint{};
 
-	// PID 参数矩阵
+	// PID 参数矩阵：行对应 X/Y/Z 或 roll/pitch/yaw，列对应 P/I/D。
 	Matrix3f gain_pos_pid{};
 	Matrix3f gain_vel_pid{};
 	Matrix3f gain_att_pid{};
 	Matrix3f gain_ang_vel_pid{};
 
-	float mass;	//飞行器总质量
-	float gravity;	//重力加速度
-	float distance;	//电机距离机体中心距离
-	float K_F;	//电机拉力系数
-	float K_M;	//电机力矩系数
-	float J_RP; 	//整个电机转子和螺旋桨绕转轴的总转动惯量
+	float mass;	// 飞行器总质量。
+	float gravity;	// 重力加速度。
+	float distance;	// 电机到机体中心的距离。
+	float K_F;	// 电机推力系数。
+	float K_M;	// 电机反扭矩系数。
+	float J_RP; 	// 转子和螺旋桨绕自身转轴的总转动惯量。
 
-	Matrix3f inertia; // 惯性矩阵
+	Matrix3f inertia; // 机体惯性矩阵，目前使用对角项 Ixx/Iyy/Izz。
 
-	// 时间相关
-	hrt_abstime _last_run_time{0};       	// 上次运行时间
+	// 时间戳和状态新鲜度监测。
+	hrt_abstime _last_run_time{0};       	// 上一次进入控制计算的时间。
 	hrt_abstime _last_debug_print_time{0};
 	hrt_abstime _last_position_update{0};
 	hrt_abstime _last_velocity_update{0};
 	hrt_abstime _last_attitude_update{0};
 	hrt_abstime _last_angular_velocity_update{0};
-	float _dt{0.01f};                   	// 控制周期（秒）
+	float _dt{0.01f};                   	// 当前控制周期，单位 s。
 
 	bool _controller_was_active{false};
 	bool _command_initialized{false};
 	uint8_t _state_age_level{0}; // 0=fresh, 1=aging, 2=stale-fail
 
-	UAVStates _current_state;		// 当前无人机状态
-	UAVCommand _current_command;		// 当前无人机指令
+	UAVStates _current_state;		// 供控制器使用的最新状态。
+	UAVCommand _current_command;		// 供控制器使用的当前目标命令。
 
-	Vector3f _pos_acc_cmd{};		// 位置控制器输出
-	Vector3f _att_ang_acc_cmd{};		// 姿态控制器输出
+	Vector3f _pos_acc_cmd{};		// 位置/速度环输出的期望加速度。
+	Vector3f _att_ang_acc_cmd{};		// 姿态/角速度环输出的期望角加速度。
 
 	float alpha_offset1{0.0f};
 	float alpha_offset2{0.0f};
@@ -275,14 +273,14 @@ private:
 	float motor_3{0.0f};
 	float motor_4{0.0f};
 
-	// 串级PID中间状态：外环位置、内环速度
+	// 位置/速度串级 PID 的积分项和上一拍误差。
 	Vector3f _pos_error_int{};
 	Vector3f _pos_error_prev{};
 	Vector3f _vel_error_int{};
 	Vector3f _vel_error_prev{};
 	bool _pid_state_initialized{false};
 
-	// 串级PID中间状态：外环姿态、内环角速度
+	// 姿态/角速度串级 PID 的积分项和上一拍误差。
 	Vector3f _att_error_int{};
 	Vector3f _att_error_prev{};
 	Vector3f _ang_vel_error_int{};

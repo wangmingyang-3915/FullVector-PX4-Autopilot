@@ -10,11 +10,10 @@ parameters:
         min: 0
         max: 1
         description:
-            short: Print Message A Enable
+            short: 调试打印开关
             long: |
-                Enable printing of message A.
-                When set to 1, prints the numerical value.
-                When set to 0, prints "hello jone".
+                控制 fullvector_control 的调试日志输出。
+                设置为 1 时周期性打印控制器状态和中间量；设置为 0 时关闭这些调试打印。
 
       PRINT_NUM_VALUE:
         type: float
@@ -24,157 +23,157 @@ parameters:
         max: 1.0
         unit: s
         description:
-            short: Print Number Value
+            short: 调试打印数值
             long: |
-                Numerical value to be printed when PRINT_A_EN is enabled.
-                This value is displayed with the message.
+                PRINT_A_EN 启用时随调试日志打印的数值。
+                主要用于确认参数更新链路是否生效。
 
 
   - group: Fullvector Control
     definitions:
       FV_POS_P_X:
         type: float
-        default: 1.5
+        default: -4.8
         decimal: 3
-        min: 0.0
+        min: -200.0
         max: 10.0
         description:
-          short: Position control gain (X-axis)
+          short: X 轴位置比例增益
           long: |
-            Position proportional gain for X-axis control.
-            Higher values increase position tracking responsiveness but may cause instability.
+            X 轴位置外环比例增益。
+            增大该值会提高位置误差到内部期望速度的响应强度，但过大可能引起振荡。
 
       FV_POS_P_Y:
         type: float
-        default: 1.5
+        default: -10.0
         decimal: 3
-        min: 0.0
+        min: -200.0
         max: 10.0
         description:
-          short: Position control gain (Y-axis)
+          short: Y 轴位置比例增益
           long: |
-            Position proportional gain for Y-axis control.
-            Higher values increase position tracking responsiveness but may cause instability.
+            Y 轴位置外环比例增益。
+            增大该值会提高位置误差到内部期望速度的响应强度，但过大可能引起振荡。
 
       FV_POS_P_Z:
         type: float
-        default: 1.2
+        default: 32.0
         decimal: 3
         min: 0.0
-        max: 10.0
+        max: 200.0
         description:
-          short: Position control gain (Z-axis)
+          short: Z 轴位置比例增益
           long: |
-            Position proportional gain for Z-axis control.
-            Higher values increase position tracking responsiveness but may cause instability.
+            Z 轴位置外环比例增益。
+            增大该值会提高高度方向位置误差到内部期望速度的响应强度。
 
       FV_POS_I_X:
         type: float
-        default: 0.002
+        default: 0.0
         decimal: 3
         min: 0.0
         max: 10.0
         description:
-          short: Position integral gain (X-axis)
+          short: X 轴位置积分增益
           long: |
-            Position integral gain for X-axis control.
-            Helps remove steady-state position error over time.
+            X 轴位置外环积分增益。
+            用于逐步消除持续的位置偏差。
 
       FV_POS_I_Y:
         type: float
-        default: 0.002
+        default: 0.0
         decimal: 3
         min: 0.0
         max: 10.0
         description:
-          short: Position integral gain (Y-axis)
+          short: Y 轴位置积分增益
           long: |
-            Position integral gain for Y-axis control.
-            Helps remove steady-state position error over time.
+            Y 轴位置外环积分增益。
+            用于逐步消除持续的位置偏差。
 
       FV_POS_I_Z:
         type: float
-        default: 0.0005
+        default: 0.0
         decimal: 3
         min: 0.0
         max: 10.0
         description:
-          short: Position integral gain (Z-axis)
+          short: Z 轴位置积分增益
           long: |
-            Position integral gain for Z-axis control.
-            Helps remove steady-state position error over time.
+            Z 轴位置外环积分增益。
+            用于逐步消除持续的高度方向位置偏差。
 
       FV_POS_D_X:
         type: float
-        default: 0.002
+        default: -24.0
         decimal: 3
-        min: 0.0
+        min: -200.0
         max: 10.0
         description:
-          short: Position derivative gain (X-axis)
+          short: X 轴位置微分增益
           long: |
-            Position derivative gain for X-axis control.
-            Helps dampen position response and reduce overshoot.
+            X 轴位置外环微分增益。
+            根据位置误差变化率抑制超调和快速变化。
 
       FV_POS_D_Y:
         type: float
-        default: 0.002
+        default: -72.0
         decimal: 3
-        min: 0.0
+        min: -200.0
         max: 10.0
         description:
-          short: Position derivative gain (Y-axis)
+          short: Y 轴位置微分增益
           long: |
-            Position derivative gain for Y-axis control.
-            Helps dampen position response and reduce overshoot.
+            Y 轴位置外环微分增益。
+            根据位置误差变化率抑制超调和快速变化。
 
       FV_POS_D_Z:
         type: float
-        default: 0.002
+        default: 128.0
         decimal: 3
         min: 0.0
-        max: 10.0
+        max: 200.0
         description:
-          short: Position derivative gain (Z-axis)
+          short: Z 轴位置微分增益
           long: |
-            Position derivative gain for Z-axis control.
-            Helps dampen position response and reduce overshoot.
+            Z 轴位置外环微分增益。
+            根据高度误差变化率抑制超调和快速变化。
 
       FV_VEL_P_X:
         type: float
-        default: -3.0
+        default: 0.08
         decimal: 3
         min: -20.0
         max: 20.0
         description:
-          short: Velocity control gain (X-axis)
+          short: X 轴速度比例增益
           long: |
-            Velocity proportional gain for X-axis control.
-            Higher values increase velocity tracking responsiveness but may cause instability.
+            X 轴速度内环比例增益。
+            当前用于把内部期望速度与估计速度的误差转换为期望加速度。
 
       FV_VEL_P_Y:
         type: float
-        default: -3.0
+        default: 0.018
         decimal: 3
         min: -20.0
         max: 20.0
         description:
-          short: Velocity control gain (Y-axis)
+          short: Y 轴速度比例增益
           long: |
-            Velocity proportional gain for Y-axis control.
-            Higher values increase velocity tracking responsiveness but may cause instability.
+            Y 轴速度内环比例增益。
+            当前用于把内部期望速度与估计速度的误差转换为期望加速度。
 
       FV_VEL_P_Z:
         type: float
-        default: -120.0
+        default: 0.008
         decimal: 3
         min: -200.0
         max: 20.0
         description:
-          short: Velocity control gain (Z-axis)
+          short: Z 轴速度比例增益
           long: |
-            Velocity proportional gain for Z-axis control.
-            Higher values increase velocity tracking responsiveness but may cause instability.
+            Z 轴速度内环比例增益。
+            当前用于把高度方向速度误差转换为期望加速度。
 
       FV_VEL_I_X:
         type: float
@@ -183,10 +182,10 @@ parameters:
         min: 0.0
         max: 10.0
         description:
-          short: Velocity integral gain (X-axis)
+          short: X 轴速度积分增益
           long: |
-            Velocity integral gain for X-axis control.
-            Helps remove steady-state velocity error over time.
+            X 轴速度内环积分增益。
+            用于补偿持续的速度跟踪误差。
 
       FV_VEL_I_Y:
         type: float
@@ -195,10 +194,10 @@ parameters:
         min: 0.0
         max: 10.0
         description:
-          short: Velocity integral gain (Y-axis)
+          short: Y 轴速度积分增益
           long: |
-            Velocity integral gain for Y-axis control.
-            Helps remove steady-state velocity error over time.
+            Y 轴速度内环积分增益。
+            用于补偿持续的速度跟踪误差。
 
       FV_VEL_I_Z:
         type: float
@@ -207,106 +206,106 @@ parameters:
         min: 0.0
         max: 10.0
         description:
-          short: Velocity integral gain (Z-axis)
+          short: Z 轴速度积分增益
           long: |
-            Velocity integral gain for Z-axis control.
-            Helps remove steady-state velocity error over time.
+            Z 轴速度内环积分增益。
+            用于补偿持续的垂向速度跟踪误差。
 
       FV_VEL_D_X:
         type: float
-        default: 0.0
+        default: 0.62
         decimal: 3
         min: 0.0
         max: 10.0
         description:
-          short: Velocity derivative gain (X-axis)
+          short: X 轴速度微分增益
           long: |
-            Velocity derivative gain for X-axis control.
-            Helps dampen velocity response and reduce oscillation.
+            X 轴速度内环微分增益。
+            根据速度误差变化率抑制加速度指令突变。
 
       FV_VEL_D_Y:
         type: float
-        default: 0.0
+        default: 0.12
         decimal: 3
         min: 0.0
         max: 10.0
         description:
-          short: Velocity derivative gain (Y-axis)
+          short: Y 轴速度微分增益
           long: |
-            Velocity derivative gain for Y-axis control.
-            Helps dampen velocity response and reduce oscillation.
+            Y 轴速度内环微分增益。
+            根据速度误差变化率抑制加速度指令突变。
 
       FV_VEL_D_Z:
         type: float
-        default: 0.0
+        default: 0.0144
         decimal: 3
         min: 0.0
         max: 10.0
         description:
-          short: Velocity derivative gain (Z-axis)
+          short: Z 轴速度微分增益
           long: |
-            Velocity derivative gain for Z-axis control.
-            Helps dampen velocity response and reduce oscillation.
+            Z 轴速度内环微分增益。
+            根据垂向速度误差变化率抑制加速度指令突变。
 
       FV_ATT_P_X:
         type: float
-        default: 1.3
+        default: 6.0
         decimal: 3
         min: 0.0
         max: 10.0
         description:
-          short: Attitude proportional gain (X-axis)
+          short: roll 姿态比例增益
           long: |
-            Attitude proportional gain for X-axis (roll) control.
-            Higher values increase attitude tracking responsiveness but may cause instability.
+            roll 姿态外环比例增益。
+            用于把 roll 角误差转换为期望角速度。
 
       FV_ATT_P_Y:
         type: float
-        default: 1.3
+        default: 6.0
         decimal: 3
         min: 0.0
         max: 10.0
         description:
-          short: Attitude proportional gain (Y-axis)
+          short: pitch 姿态比例增益
           long: |
-            Attitude proportional gain for Y-axis (pitch) control.
-            Higher values increase attitude tracking responsiveness but may cause instability.
+            pitch 姿态外环比例增益。
+            用于把 pitch 角误差转换为期望角速度。
 
       FV_ATT_P_Z:
         type: float
-        default: 1.5
+        default: 1.0
         decimal: 3
         min: 0.0
         max: 10.0
         description:
-          short: Attitude proportional gain (Z-axis)
+          short: yaw 姿态比例增益
           long: |
-            Attitude proportional gain for Z-axis (yaw) control.
-            Higher values increase attitude tracking responsiveness but may cause instability.
+            yaw 姿态外环比例增益。
+            用于把航向角误差转换为期望偏航角速度。
 
       FV_ATT_I_X:
         type: float
-        default: 0.3
+        default: 0.1
         decimal: 3
         min: 0.0
         max: 10.0
         description:
-          short: Attitude integral gain (X-axis)
+          short: roll 姿态积分增益
           long: |
-            Attitude integral gain for X-axis (roll) control.
-            Helps compensate steady-state attitude bias.
+            roll 姿态外环积分增益。
+            用于补偿持续的 roll 姿态偏差。
 
       FV_ATT_I_Y:
         type: float
-        default: 0.3
+        default: 0.1
         decimal: 3
         min: 0.0
         max: 10.0
         description:
-          short: Attitude integral gain (Y-axis)
+          short: pitch 姿态积分增益
           long: |
-            Attitude integral gain for Y-axis (pitch) control.
-            Helps compensate steady-state attitude bias.
+            pitch 姿态外环积分增益。
+            用于补偿持续的 pitch 姿态偏差。
 
       FV_ATT_I_Z:
         type: float
@@ -315,34 +314,34 @@ parameters:
         min: 0.0
         max: 10.0
         description:
-          short: Attitude integral gain (Z-axis)
+          short: yaw 姿态积分增益
           long: |
-            Attitude integral gain for Z-axis (yaw) control.
-            Helps compensate steady-state attitude bias.
+            yaw 姿态外环积分增益。
+            用于补偿持续的航向偏差。
 
       FV_ATT_D_X:
         type: float
-        default: 0.0
+        default: 0.8
         decimal: 3
         min: 0.0
         max: 10.0
         description:
-          short: Attitude derivative gain (X-axis)
+          short: roll 姿态微分增益
           long: |
-            Attitude derivative gain for X-axis (roll) control.
-            Helps dampen attitude transients.
+            roll 姿态外环微分增益。
+            根据 roll 误差变化率抑制姿态目标跟踪超调。
 
       FV_ATT_D_Y:
         type: float
-        default: 0.0
+        default: 0.8
         decimal: 3
         min: 0.0
         max: 10.0
         description:
-          short: Attitude derivative gain (Y-axis)
+          short: pitch 姿态微分增益
           long: |
-            Attitude derivative gain for Y-axis (pitch) control.
-            Helps dampen attitude transients.
+            pitch 姿态外环微分增益。
+            根据 pitch 误差变化率抑制姿态目标跟踪超调。
 
       FV_ATT_D_Z:
         type: float
@@ -351,106 +350,106 @@ parameters:
         min: 0.0
         max: 10.0
         description:
-          short: Attitude derivative gain (Z-axis)
+          short: yaw 姿态微分增益
           long: |
-            Attitude derivative gain for Z-axis (yaw) control.
-            Helps dampen attitude transients.
+            yaw 姿态外环微分增益。
+            根据航向误差变化率抑制偏航超调。
 
       FV_ANG_VEL_P_X:
         type: float
-        default: 1000.0
+        default: 6.0
         decimal: 3
         min: 0.0
         max: 2000.0
         description:
-          short: Angular velocity proportional gain (X-axis)
+          short: roll 角速度比例增益
           long: |
-            Angular velocity proportional gain for X-axis control.
-            Higher values increase angular velocity tracking responsiveness but may cause instability.
+            roll 角速度内环比例增益。
+            用于把期望角速度与估计角速度的误差转换为期望角加速度。
 
       FV_ANG_VEL_P_Y:
         type: float
-        default: 1000.0
+        default: 6.0
         decimal: 3
         min: 0.0
         max: 2000.0
         description:
-          short: Angular velocity proportional gain (Y-axis)
+          short: pitch 角速度比例增益
           long: |
-            Angular velocity proportional gain for Y-axis control.
-            Higher values increase angular velocity tracking responsiveness but may cause instability.
+            pitch 角速度内环比例增益。
+            用于把期望角速度与估计角速度的误差转换为期望角加速度。
 
       FV_ANG_VEL_P_Z:
         type: float
-        default: 1000.0
+        default: 1.0
         decimal: 3
         min: 0.0
         max: 2000.0
         description:
-          short: Angular velocity proportional gain (Z-axis)
+          short: yaw 角速度比例增益
           long: |
-            Angular velocity proportional gain for Z-axis control.
-            Higher values increase angular velocity tracking responsiveness but may cause instability.
+            yaw 角速度内环比例增益。
+            用于把期望偏航角速度与估计偏航角速度的误差转换为期望角加速度。
 
       FV_ANG_VEL_I_X:
         type: float
-        default: 100.0
+        default: 0.1
         decimal: 3
         min: 0.0
         max: 1000.0
         description:
-          short: Angular velocity integral gain (X-axis)
+          short: roll 角速度积分增益
           long: |
-            Angular velocity integral gain for X-axis control.
-            Helps remove steady-state angular velocity error.
+            roll 角速度内环积分增益。
+            用于补偿持续的 roll 角速度误差。
 
       FV_ANG_VEL_I_Y:
         type: float
-        default: 100.0
+        default: 0.1
         decimal: 3
         min: 0.0
         max: 1000.0
         description:
-          short: Angular velocity integral gain (Y-axis)
+          short: pitch 角速度积分增益
           long: |
-            Angular velocity integral gain for Y-axis control.
-            Helps remove steady-state angular velocity error.
+            pitch 角速度内环积分增益。
+            用于补偿持续的 pitch 角速度误差。
 
       FV_ANG_VEL_I_Z:
         type: float
-        default: 400.0
+        default: 0.0
         decimal: 3
         min: 0.0
         max: 1000.0
         description:
-          short: Angular velocity integral gain (Z-axis)
+          short: yaw 角速度积分增益
           long: |
-            Angular velocity integral gain for Z-axis control.
-            Helps remove steady-state angular velocity error.
+            yaw 角速度内环积分增益。
+            用于补偿持续的偏航角速度误差。
 
       FV_ANG_VEL_D_X:
         type: float
-        default: 0.0
+        default: 0.8
         decimal: 3
         min: 0.0
         max: 2.0
         description:
-          short: Angular velocity derivative gain (X-axis)
+          short: roll 角速度微分增益
           long: |
-            Angular velocity derivative gain for X-axis control.
-            Helps dampen angular velocity oscillations.
+            roll 角速度内环微分增益。
+            根据 roll 角速度误差变化率抑制角加速度指令突变。
 
       FV_ANG_VEL_D_Y:
         type: float
-        default: 0.0
+        default: 0.8
         decimal: 3
         min: 0.0
         max: 2.0
         description:
-          short: Angular velocity derivative gain (Y-axis)
+          short: pitch 角速度微分增益
           long: |
-            Angular velocity derivative gain for Y-axis control.
-            Helps dampen angular velocity oscillations.
+            pitch 角速度内环微分增益。
+            根据 pitch 角速度误差变化率抑制角加速度指令突变。
 
       FV_ANG_VEL_D_Z:
         type: float
@@ -459,10 +458,10 @@ parameters:
         min: 0.0
         max: 100.0
         description:
-          short: Angular velocity derivative gain (Z-axis)
+          short: yaw 角速度微分增益
           long: |
-            Angular velocity derivative gain for Z-axis control.
-            Helps dampen angular velocity oscillations.
+            yaw 角速度内环微分增益。
+            根据偏航角速度误差变化率抑制角加速度指令突变。
 
       FV_MASS:
         type: float
@@ -472,10 +471,10 @@ parameters:
         min: 0.1
         max: 50.0
         description:
-          short: Vehicle mass
+          short: 飞行器质量
           long: |
-            Mass of the vehicle for control calculations.
-            Used to compute thrust required for acceleration.
+            飞行器总质量。
+            用于垂向推力、水平倾转角和动力学估算。
 
       FV_GRAVITY:
         type: float
@@ -485,10 +484,10 @@ parameters:
         min: 1.0
         max: 20.0
         description:
-          short: Gravity acceleration
+          short: 重力加速度
           long: |
-            Gravity acceleration used in thrust-related calculations.
-            Keep this at 9.81 for Earth unless running a custom simulation.
+            控制分配中使用的重力加速度。
+            用于悬停角速度和 NED 垂向加速度计算。
 
       FV_MOTOR_DIST:
         type: float
@@ -498,10 +497,10 @@ parameters:
         min: 0.01
         max: 2.0
         description:
-          short: Motor distance from body centre
+          short: 电机到机体中心距离
           long: |
-            Distance from each motor to the vehicle body centre.
-            Used in moment and control allocation calculations.
+            每个电机到机体中心的距离。
+            用于力臂、滚转/俯仰力矩和偏航力矩估算。
 
       FV_K_F:
         type: float
@@ -510,10 +509,10 @@ parameters:
         min: 0.000001
         max: 1000.0
         description:
-          short: Motor thrust coefficient
+          short: 电机推力系数
           long: |
-            Thrust coefficient used to map motor input to generated thrust.
-            Keep consistent with the propulsion model used in simulation.
+            电机推力系数。
+            用于在电机角速度平方和推力之间换算，应与仿真或实机动力模型一致。
 
       FV_K_M:
         type: float
@@ -522,10 +521,10 @@ parameters:
         min: 0.0
         max: 1000.0
         description:
-          short: Motor moment coefficient
+          short: 电机反扭矩系数
           long: |
-            Moment coefficient used to estimate reaction torque from motor rotation.
-            Keep consistent with the propulsion model used in simulation.
+            电机反扭矩系数。
+            用于估算电机旋转产生的偏航反扭矩，应与动力模型一致。
 
       FV_HOVER_THR:
         type: float
@@ -534,10 +533,10 @@ parameters:
         min: 0.05
         max: 0.95
         description:
-          short: Normalized hover thrust
+          short: 悬停归一化推力
           long: |
-            Normalized actuator_motors output corresponding to the internally
-            computed hover angular speed.
+            内部计算得到悬停角速度时对应的 actuator_motors 归一化输出。
+            用于把物理角速度命令映射到 PX4 执行器输出范围。
 
       FV_INERTIA_XX:
         type: float
@@ -547,10 +546,10 @@ parameters:
         min: 0.001
         max: 10.0
         description:
-          short: Inertia around X-axis
+          short: X 轴转动惯量
           long: |
-            Moment of inertia around the X-axis (roll) for control calculations.
-            Affects roll dynamics and control response.
+            机体绕 X 轴的转动惯量 Ixx。
+            用于 roll 方向角加速度和力矩换算。
 
       FV_INERTIA_YY:
         type: float
@@ -560,10 +559,10 @@ parameters:
         min: 0.001
         max: 10.0
         description:
-          short: Inertia around Y-axis
+          short: Y 轴转动惯量
           long: |
-            Moment of inertia around the Y-axis (pitch) for control calculations.
-            Affects pitch dynamics and control response.
+            机体绕 Y 轴的转动惯量 Iyy。
+            用于 pitch 方向角加速度和力矩换算。
 
       FV_INERTIA_ZZ:
         type: float
@@ -573,10 +572,10 @@ parameters:
         min: 0.001
         max: 10.0
         description:
-          short: Inertia around Z-axis
+          short: Z 轴转动惯量
           long: |
-            Moment of inertia around the Z-axis (yaw) for control calculations.
-            Affects yaw dynamics and control response.
+            机体绕 Z 轴的转动惯量 Izz。
+            用于 yaw 方向角加速度和力矩换算。
 
       FV_J_RP:
         type: float
@@ -586,18 +585,17 @@ parameters:
         min: 0.0
         max: 1.0
         description:
-          short: Rotor-prop total rotational inertia
+          short: 转子螺旋桨转动惯量
           long: |
-            Combined rotational inertia of the rotor and propeller about its spin axis.
-            Used for gyroscopic effect modelling.
+            电机转子和螺旋桨绕自身转轴的合成转动惯量。
+            用于估算转子陀螺效应对 roll/pitch 动力学的影响。
 
       FV_ENABLE:
         type: boolean
         default: 1
         description:
-          short: Enable fullvectormetric control output
+          short: 启用 fullvector 控制输出
           long: |
-            Enable/disable fullvectormetric control output publishing.
-            Control output is published only when this parameter is enabled,
-            the vehicle is armed, and the current navigation state is explicitly
-            allowed by fullvector_control.
+            启用或关闭 fullvector_control 的执行器输出。
+            只有该参数启用、飞机已解锁、未进入终止模式，并且当前导航状态被模块允许时，
+            控制器才会发布电机和倾转舵机输出。

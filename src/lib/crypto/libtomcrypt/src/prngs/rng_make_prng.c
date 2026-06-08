@@ -64,6 +64,6 @@ int rng_make_prng(int bits, int wprng, prng_state *prng,
 #endif /* #ifdef LTC_RNG_MAKE_PRNG */
 
 
-/* ref:         $Format:%D$ */
-/* git commit:  $Format:%H$ */
-/* commit time: $Format:%ai$ */
+/* ref:         HEAD -> main */
+/* git commit:  684efeb5120df0df20fb56771cda3d310858777d */
+/* commit time: 2026-06-07 22:27:16 +0800 */

@@ -34,6 +34,6 @@ int rc4_stream_test(void)
 
 #endif
 
-/* ref:         $Format:%D$ */
-/* git commit:  $Format:%H$ */
-/* commit time: $Format:%ai$ */
+/* ref:         HEAD -> main */
+/* git commit:  684efeb5120df0df20fb56771cda3d310858777d */
+/* commit time: 2026-06-07 22:27:16 +0800 */

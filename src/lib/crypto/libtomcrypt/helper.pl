@@ -140,9 +140,9 @@ sub check_comments {
  */
 MARKER
   my $last_comment = <<'MARKER';
-/* ref:         $Format:%D$ */
-/* git commit:  $Format:%H$ */
-/* commit time: $Format:%ai$ */
+/* ref:         HEAD -> main */
+/* git commit:  684efeb5120df0df20fb56771cda3d310858777d */
+/* commit time: 2026-06-07 22:27:16 +0800 */
 MARKER
   my @all_files;
   find({ wanted=> sub { push @all_files, $_ if $_ =~ /\.(c|h)$/ }, no_chdir=>1 }, 'demos', 'src', 'tests');
