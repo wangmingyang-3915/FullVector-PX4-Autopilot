@@ -644,9 +644,11 @@ ControlAllocator::publish_control_allocator_status(int matrix_index)
 void
 ControlAllocator::publish_actuator_controls()
 {
+	// fullvector 在这些模式下直接发布 actuator_motors/actuator_servos，控制分配器必须让出最终执行器输出。
 	const bool fullvector_controls_actuators = (_fv_enable == 1)
 			&& ((_nav_state == vehicle_status_s::NAVIGATION_STATE_POSCTL)
-			    || (_nav_state == vehicle_status_s::NAVIGATION_STATE_OFFBOARD));
+			    || (_nav_state == vehicle_status_s::NAVIGATION_STATE_OFFBOARD)
+			    || (_nav_state == vehicle_status_s::NAVIGATION_STATE_STAB));
 
 	if (fullvector_controls_actuators) {
 		return;

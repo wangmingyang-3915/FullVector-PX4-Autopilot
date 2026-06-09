@@ -130,10 +130,12 @@ private:
 	bool _vtol{false};
 	bool _vtol_tailsitter{false};
 	bool _vtol_in_transition_mode{false};
+	uint8_t _nav_state{vehicle_status_s::NAVIGATION_STATE_MAX};
 
 	uint8_t _quat_reset_counter{0};
 
 	DEFINE_PARAMETERS(
+		(ParamBool<px4::params::FV_ENABLE>)         _param_fv_enable,
 		(ParamInt<px4::params::MC_AIRMODE>)         _param_mc_airmode,
 		(ParamFloat<px4::params::MC_MAN_TILT_TAU>)  _param_mc_man_tilt_tau,
 
@@ -155,4 +157,3 @@ private:
 		(ParamInt<px4::params::MPC_THR_CURVE>)      _param_mpc_thr_curve        /**< throttle curve behavior */
 	)
 };
-

@@ -67,6 +67,8 @@
 #include <uORB/topics/vehicle_angular_acceleration_setpoint.h>
 #include <uORB/topics/takeoff_status.h>
 #include <uORB/topics/vehicle_land_detected.h>
+// 自稳模式下不使用 trajectory_setpoint，而是直接读取手动摇杆输入生成姿态/油门目标。
+#include <uORB/topics/manual_control_setpoint.h>
 // 订阅 PX4 当前飞行模式和轨迹目标；模块只在 Run() 中允许的模式下发布 fullvector 输出。
 #include <uORB/topics/trajectory_setpoint.h>
 #include <uORB/topics/vehicle_status.h>
@@ -143,6 +145,8 @@ private:
 	void publishSafeActuatorFallback();
 
 	bool updateUAVState();
+	// 自稳模式用于 GPS 拒止或无本地位置场景，只要求姿态和角速度有效。
+	bool updateAttitudeStateOnly();
 
 	// 统计 Run() 单次控制循环耗时。
 	perf_counter_t _loop_perf{perf_alloc(PC_ELAPSED, MODULE_NAME": loop")};
@@ -220,12 +224,16 @@ private:
 	uORB::Subscription _actuator_motors_sub{ORB_ID(actuator_motors)};
 	uORB::Subscription _takeoff_status_sub{ORB_ID(takeoff_status)};
 	uORB::Subscription _vehicle_land_detected_sub{ORB_ID(vehicle_land_detected)};
+	// 自稳 fullvector 使用手动输入替代位置环输出和 trajectory_setpoint。
+	uORB::Subscription _manual_control_setpoint_sub{ORB_ID(manual_control_setpoint)};
 
 	// 最近一次从 uORB 读取到的原始 PX4 消息。
 	vehicle_local_position_s _position{};
 	vehicle_attitude_s _attitude{};
 	vehicle_angular_velocity_s _angular_velocity{};
 	vehicle_control_mode_s _control_mode{};
+	// 缓存最新手动摇杆输入，STAB 模式下用于生成姿态目标和垂向加速度。
+	manual_control_setpoint_s _manual_control_setpoint{};
 	// 缓存最新飞行状态和轨迹目标，Run() 中统一转换为 fullvector 控制命令。
 	vehicle_status_s _vehicle_status{};
 	trajectory_setpoint_s _trajectory_setpoint{};

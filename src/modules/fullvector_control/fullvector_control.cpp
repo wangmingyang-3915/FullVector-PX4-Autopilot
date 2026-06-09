@@ -291,6 +291,54 @@ bool FullvectorControl::updateUAVState()
 	return true;
 }
 
+bool FullvectorControl::updateAttitudeStateOnly()
+{
+	_state_age_level = 0;
+
+	// 自稳接管不需要位置/速度闭环，因此只刷新姿态四元数和机体系角速度。
+	if (_vehicle_attitude_sub.updated()) {
+		_vehicle_attitude_sub.copy(&_attitude);
+		_current_state.attitude = matrix::Quatf(_attitude.q);
+		_last_attitude_update = _attitude.timestamp;
+	}
+
+	if (_vehicle_angular_velocity_sub.updated()) {
+		_vehicle_angular_velocity_sub.copy(&_angular_velocity);
+		_current_state.angular_velocity = Vector3f(_angular_velocity.xyz[0],
+								   _angular_velocity.xyz[1],
+								   _angular_velocity.xyz[2]);
+		_last_angular_velocity_update = _angular_velocity.timestamp;
+	}
+
+	// 两个姿态相关状态至少各收到过一次，才允许进入自稳 fullvector 控制。
+	if ((_last_attitude_update == 0) || (_last_angular_velocity_update == 0)) {
+		return false;
+	}
+
+	// 使用和完整状态检查一致的老化策略，但只检查姿态和角速度。
+	const hrt_abstime elapsed_attitude = hrt_elapsed_time(&_last_attitude_update);
+	const hrt_abstime elapsed_ang_vel = hrt_elapsed_time(&_last_angular_velocity_update);
+	constexpr hrt_abstime stale_warn_timeout = 200_ms;
+	constexpr hrt_abstime stale_fail_timeout = 500_ms;
+	const bool aging = (elapsed_attitude > stale_warn_timeout) || (elapsed_ang_vel > stale_warn_timeout);
+	const bool stale_fail = (elapsed_attitude > stale_fail_timeout) || (elapsed_ang_vel > stale_fail_timeout);
+
+	if (aging) {
+		static hrt_abstime last_stale_warn{0};
+
+		if ((last_stale_warn == 0) || (hrt_elapsed_time(&last_stale_warn) > 1_s)) {
+			PX4_WARN("attitude state aging: att=%llu ang=%llu us",
+				 (unsigned long long)elapsed_attitude,
+				 (unsigned long long)elapsed_ang_vel);
+			last_stale_warn = hrt_absolute_time();
+		}
+	}
+
+	_state_age_level = stale_fail ? 2 : (aging ? 1 : 0);
+
+	return true;
+}
+
 
 void FullvectorControl::Run()
 {
@@ -315,11 +363,13 @@ void FullvectorControl::Run()
 	const bool armed = _control_mode.flag_armed;
 	const bool posctl_mode = (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_POSCTL);
 	const bool offboard_mode = (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_OFFBOARD);
+	// 自稳模式下由手动摇杆直接生成 fullvector 姿态/油门目标。
+	const bool stabilized_mode = (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_STAB);
 	// 终止模式下必须停止本控制器输出，避免和 PX4 失效终止逻辑冲突。
 	const bool termination_mode = _control_mode.flag_control_termination_enabled
 				      || (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_TERMINATION);
-	// 状态估计是否可用由 updateUAVState() 判断；是否进入 fullvector 闭环由飞行模式显式门控。
-	const bool fullvector_mode_allowed = posctl_mode || offboard_mode;
+	// 状态估计是否可用由状态更新函数判断；是否进入 fullvector 闭环由飞行模式显式门控。
+	const bool fullvector_mode_allowed = posctl_mode || offboard_mode || stabilized_mode;
 	const bool module_active = fv_enabled && armed && !termination_mode;
 
 	if (!module_active) {
@@ -388,8 +438,10 @@ void FullvectorControl::Run()
 		_dt = dt_clamp_s;
 	}
 
-	// 状态尚未初始化时发布安全输出，避免用无效状态闭环控制。
-	if (!updateUAVState()) {
+	// 自稳 fullvector 只依赖姿态和角速度；定点/Offboard 仍要求完整本地位置状态。
+	const bool state_valid = stabilized_mode ? updateAttitudeStateOnly() : updateUAVState();
+
+	if (!state_valid) {
 		publishSafeActuatorFallback();
 		resetPidState();
 		_last_run_time = 0;
@@ -431,7 +483,9 @@ void FullvectorControl::Run()
 		_command_initialized = true;
 	}
 
-	const bool trajectory_valid = (_trajectory_setpoint.timestamp != 0)
+	// 自稳模式不使用 trajectory_setpoint，避免和手动摇杆目标混用。
+	const bool trajectory_valid = !stabilized_mode
+				      && (_trajectory_setpoint.timestamp != 0)
 				      && (hrt_elapsed_time(&_trajectory_setpoint.timestamp) < 500_ms);
 	float yaw_sp_target = _current_command.Euler_angles(2);
 
@@ -466,6 +520,49 @@ void FullvectorControl::Run()
 	attitude_sp_target(1) = 0.0f;
 	attitude_sp_target(2) = yaw_sp_target;
 	_current_command.angular_velocity.zero();
+
+	if (stabilized_mode) {
+		_manual_control_setpoint_sub.update(&_manual_control_setpoint);
+
+		// 第一版自稳 fullvector 采用保守限幅：最大姿态约 20 度，偏航为速率输入。
+		constexpr float max_manual_tilt_rad = 0.35f; // about 20 deg
+		constexpr float max_manual_yaw_rate = 1.0f; // rad/s
+		constexpr float max_manual_xy_accel = 2.0f; // m/s^2
+		constexpr float max_manual_vertical_accel = 4.0f; // m/s^2
+		// 手动输入可能为 NaN，所有通道先约束到 [-1, 1]，无效时回中。
+		const float roll_stick = PX4_ISFINITE(_manual_control_setpoint.roll) ?
+					 math::constrain(_manual_control_setpoint.roll, -1.0f, 1.0f) : 0.0f;
+		const float pitch_stick = PX4_ISFINITE(_manual_control_setpoint.pitch) ?
+					  math::constrain(_manual_control_setpoint.pitch, -1.0f, 1.0f) : 0.0f;
+		const float yaw_stick = PX4_ISFINITE(_manual_control_setpoint.yaw) ?
+					math::constrain(_manual_control_setpoint.yaw, -1.0f, 1.0f) : 0.0f;
+		const float throttle_stick = PX4_ISFINITE(_manual_control_setpoint.throttle) ?
+					     math::constrain(_manual_control_setpoint.throttle, -1.0f, 1.0f) : 0.0f;
+		const float throttle = math::constrain((throttle_stick + 1.0f) * 0.5f, 0.0f, 1.0f);
+		const float hover_throttle = math::constrain(_param_fv_hover_thr.get(), 0.05f, 0.95f);
+
+		// roll 右杆为正；pitch 前推为正，但 PX4/NED 中机头下压对应负 pitch，因此取负号。
+		attitude_sp_target(0) = roll_stick * max_manual_tilt_rad;
+		attitude_sp_target(1) = -pitch_stick * max_manual_tilt_rad;
+		// yaw 使用速率积分成航向目标，继续复用后面的姿态目标限速逻辑。
+		attitude_sp_target(2) = matrix::wrap_pi(_current_command.Euler_angles(2) + yaw_stick * max_manual_yaw_rate * _dt);
+
+		// 自稳模式跳过位置闭环，但仍生成等效位置环加速度输出：
+		// pitch/roll 摇杆给水平 NED 加速度，油门给垂向 NED 加速度。
+		_current_command.position = _current_state.position;
+		_current_command.velocity.zero();
+		_current_command.acceleration.zero();
+		_pos_acc_cmd.zero();
+		const float forward_accel = pitch_stick * max_manual_xy_accel;
+		const float right_accel = roll_stick * max_manual_xy_accel;
+		const float yaw = Vector3f(Eulerf(_current_state.attitude))(2);
+		// 将机头前向/右向的手动加速度指令按当前航向旋转到 NED x/y。
+		_pos_acc_cmd(0) = cosf(yaw) * forward_accel - sinf(yaw) * right_accel;
+		_pos_acc_cmd(1) = sinf(yaw) * forward_accel + cosf(yaw) * right_accel;
+		// NED z 轴向下为正：油门高于悬停时需要向上加速，因此 acc_z 为负。
+		_pos_acc_cmd(2) = math::constrain(-((throttle - hover_throttle) / hover_throttle) * max_manual_vertical_accel,
+						  -max_manual_vertical_accel, max_manual_vertical_accel);
+	}
 
 	constexpr float attitude_sp_slew_rate = 1.0f; // rad/s
 	const float attitude_sp_step = attitude_sp_slew_rate * _dt;
@@ -525,8 +622,11 @@ void FullvectorControl::Run()
 		_last_debug_print_time = now;
 	}
 
-	// 串级控制流程：位置环 + 姿态环 -> 力/力矩分配。
-	PositionControl(state_for_control, _current_command, _dt);
+	// 串级控制流程：自稳模式跳过位置环，使用手动油门生成的垂向加速度指令。
+	if (!stabilized_mode) {
+		PositionControl(state_for_control, _current_command, _dt);
+	}
+
 	AttitudeControl(state_for_control, _current_command, _dt);
 	controlAllocation(state_for_control, _current_command);
 

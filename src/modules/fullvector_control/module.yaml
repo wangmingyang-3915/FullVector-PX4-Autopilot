@@ -33,10 +33,10 @@ parameters:
     definitions:
       FV_POS_P_X:
         type: float
-        default: -4.8
+        default: 0.95
         decimal: 3
-        min: -200.0
-        max: 10.0
+        min: 0.0
+        max: 2.0
         description:
           short: X 轴位置比例增益
           long: |
@@ -45,10 +45,10 @@ parameters:
 
       FV_POS_P_Y:
         type: float
-        default: -10.0
+        default: 0.95
         decimal: 3
-        min: -200.0
-        max: 10.0
+        min: 0.0
+        max: 2.0
         description:
           short: Y 轴位置比例增益
           long: |
@@ -57,10 +57,10 @@ parameters:
 
       FV_POS_P_Z:
         type: float
-        default: 32.0
+        default: 1.0
         decimal: 3
         min: 0.0
-        max: 200.0
+        max: 1.5
         description:
           short: Z 轴位置比例增益
           long: |
@@ -105,9 +105,9 @@ parameters:
 
       FV_POS_D_X:
         type: float
-        default: -24.0
+        default: 0.0
         decimal: 3
-        min: -200.0
+        min: 0.0
         max: 10.0
         description:
           short: X 轴位置微分增益
@@ -117,9 +117,9 @@ parameters:
 
       FV_POS_D_Y:
         type: float
-        default: -72.0
+        default: 0.0
         decimal: 3
-        min: -200.0
+        min: 0.0
         max: 10.0
         description:
           short: Y 轴位置微分增益
@@ -129,10 +129,10 @@ parameters:
 
       FV_POS_D_Z:
         type: float
-        default: 128.0
+        default: 0.0
         decimal: 3
         min: 0.0
-        max: 200.0
+        max: 10.0
         description:
           short: Z 轴位置微分增益
           long: |
@@ -141,10 +141,10 @@ parameters:
 
       FV_VEL_P_X:
         type: float
-        default: 0.08
+        default: 1.8
         decimal: 3
-        min: -20.0
-        max: 20.0
+        min: 1.2
+        max: 5.0
         description:
           short: X 轴速度比例增益
           long: |
@@ -153,10 +153,10 @@ parameters:
 
       FV_VEL_P_Y:
         type: float
-        default: 0.018
+        default: 1.8
         decimal: 3
-        min: -20.0
-        max: 20.0
+        min: 1.2
+        max: 5.0
         description:
           short: Y 轴速度比例增益
           long: |
@@ -165,10 +165,10 @@ parameters:
 
       FV_VEL_P_Z:
         type: float
-        default: 0.008
+        default: 4.0
         decimal: 3
-        min: -200.0
-        max: 20.0
+        min: 2.0
+        max: 15.0
         description:
           short: Z 轴速度比例增益
           long: |
@@ -177,10 +177,10 @@ parameters:
 
       FV_VEL_I_X:
         type: float
-        default: 0.0
+        default: 0.4
         decimal: 3
         min: 0.0
-        max: 10.0
+        max: 60.0
         description:
           short: X 轴速度积分增益
           long: |
@@ -189,10 +189,10 @@ parameters:
 
       FV_VEL_I_Y:
         type: float
-        default: 0.0
+        default: 0.4
         decimal: 3
         min: 0.0
-        max: 10.0
+        max: 60.0
         description:
           short: Y 轴速度积分增益
           long: |
@@ -201,10 +201,10 @@ parameters:
 
       FV_VEL_I_Z:
         type: float
-        default: 0.0
+        default: 2.0
         decimal: 3
-        min: 0.0
-        max: 10.0
+        min: 0.2
+        max: 3.0
         description:
           short: Z 轴速度积分增益
           long: |
@@ -213,10 +213,10 @@ parameters:
 
       FV_VEL_D_X:
         type: float
-        default: 0.62
+        default: 0.2
         decimal: 3
-        min: 0.0
-        max: 10.0
+        min: 0.1
+        max: 2.0
         description:
           short: X 轴速度微分增益
           long: |
@@ -225,10 +225,10 @@ parameters:
 
       FV_VEL_D_Y:
         type: float
-        default: 0.12
+        default: 0.2
         decimal: 3
-        min: 0.0
-        max: 10.0
+        min: 0.1
+        max: 2.0
         description:
           short: Y 轴速度微分增益
           long: |
@@ -237,10 +237,10 @@ parameters:
 
       FV_VEL_D_Z:
         type: float
-        default: 0.0144
+        default: 0.0
         decimal: 3
         min: 0.0
-        max: 10.0
+        max: 2.0
         description:
           short: Z 轴速度微分增益
           long: |
@@ -249,10 +249,10 @@ parameters:
 
       FV_ATT_P_X:
         type: float
-        default: 6.0
+        default: 6.5
         decimal: 3
         min: 0.0
-        max: 10.0
+        max: 12.0
         description:
           short: roll 姿态比例增益
           long: |
@@ -261,10 +261,10 @@ parameters:
 
       FV_ATT_P_Y:
         type: float
-        default: 6.0
+        default: 6.5
         decimal: 3
         min: 0.0
-        max: 10.0
+        max: 12.0
         description:
           short: pitch 姿态比例增益
           long: |
@@ -273,10 +273,10 @@ parameters:
 
       FV_ATT_P_Z:
         type: float
-        default: 1.0
+        default: 2.8
         decimal: 3
         min: 0.0
-        max: 10.0
+        max: 5.0
         description:
           short: yaw 姿态比例增益
           long: |
@@ -285,7 +285,7 @@ parameters:
 
       FV_ATT_I_X:
         type: float
-        default: 0.1
+        default: 0.0
         decimal: 3
         min: 0.0
         max: 10.0
@@ -297,7 +297,7 @@ parameters:
 
       FV_ATT_I_Y:
         type: float
-        default: 0.1
+        default: 0.0
         decimal: 3
         min: 0.0
         max: 10.0
@@ -321,7 +321,7 @@ parameters:
 
       FV_ATT_D_X:
         type: float
-        default: 0.8
+        default: 0.0
         decimal: 3
         min: 0.0
         max: 10.0
@@ -333,7 +333,7 @@ parameters:
 
       FV_ATT_D_Y:
         type: float
-        default: 0.8
+        default: 0.0
         decimal: 3
         min: 0.0
         max: 10.0
@@ -357,10 +357,10 @@ parameters:
 
       FV_ANG_VEL_P_X:
         type: float
-        default: 6.0
+        default: 0.15
         decimal: 3
-        min: 0.0
-        max: 2000.0
+        min: 0.01
+        max: 0.5
         description:
           short: roll 角速度比例增益
           long: |
@@ -369,10 +369,10 @@ parameters:
 
       FV_ANG_VEL_P_Y:
         type: float
-        default: 6.0
+        default: 0.15
         decimal: 3
-        min: 0.0
-        max: 2000.0
+        min: 0.01
+        max: 0.6
         description:
           short: pitch 角速度比例增益
           long: |
@@ -381,10 +381,10 @@ parameters:
 
       FV_ANG_VEL_P_Z:
         type: float
-        default: 1.0
+        default: 0.2
         decimal: 3
         min: 0.0
-        max: 2000.0
+        max: 0.6
         description:
           short: yaw 角速度比例增益
           long: |
@@ -393,10 +393,10 @@ parameters:
 
       FV_ANG_VEL_I_X:
         type: float
-        default: 0.1
+        default: 0.2
         decimal: 3
         min: 0.0
-        max: 1000.0
+        max: 1.0
         description:
           short: roll 角速度积分增益
           long: |
@@ -405,10 +405,10 @@ parameters:
 
       FV_ANG_VEL_I_Y:
         type: float
-        default: 0.1
+        default: 0.2
         decimal: 3
         min: 0.0
-        max: 1000.0
+        max: 1.0
         description:
           short: pitch 角速度积分增益
           long: |
@@ -417,10 +417,10 @@ parameters:
 
       FV_ANG_VEL_I_Z:
         type: float
-        default: 0.0
+        default: 0.1
         decimal: 3
         min: 0.0
-        max: 1000.0
+        max: 1.0
         description:
           short: yaw 角速度积分增益
           long: |
@@ -429,10 +429,10 @@ parameters:
 
       FV_ANG_VEL_D_X:
         type: float
-        default: 0.8
+        default: 0.003
         decimal: 3
         min: 0.0
-        max: 2.0
+        max: 0.01
         description:
           short: roll 角速度微分增益
           long: |
@@ -441,10 +441,10 @@ parameters:
 
       FV_ANG_VEL_D_Y:
         type: float
-        default: 0.8
+        default: 0.003
         decimal: 3
         min: 0.0
-        max: 2.0
+        max: 0.01
         description:
           short: pitch 角速度微分增益
           long: |
@@ -456,7 +456,7 @@ parameters:
         default: 0.0
         decimal: 3
         min: 0.0
-        max: 100.0
+        max: 0.1
         description:
           short: yaw 角速度微分增益
           long: |
