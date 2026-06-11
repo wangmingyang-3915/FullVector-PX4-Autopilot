@@ -548,10 +548,11 @@ void FullvectorControl::Run()
 	const bool trajectory_valid = !stabilized_mode
 				      && (_trajectory_setpoint.timestamp != 0)
 				      && (hrt_elapsed_time(&_trajectory_setpoint.timestamp) < 500_ms);
-	float yaw_sp_target = _current_command.Euler_angles(2);
+	// 定点模式要求三个欧拉角始终为 0，因此 yaw 目标也固定为 0 rad。
+	float yaw_sp_target = posctl_mode ? 0.0f : _current_command.Euler_angles(2);
 
 	if (trajectory_valid) {
-		// POSCTL: FlightModeManager 会把遥控器输入转换成 trajectory_setpoint。
+		// POSCTL: FlightModeManager 会把遥控器输入转换成 trajectory_setpoint，但姿态在本模块固定为零姿态。
 		// OFFBOARD: trajectory_setpoint 通常来自外部控制端。
 		// 上层可能只填充部分轴的 setpoint，本控制器只采用有限值字段。
 		// 对有限值才覆盖当前命令，NaN 表示该轴不由上层轨迹直接约束。
@@ -569,12 +570,13 @@ void FullvectorControl::Run()
 			}
 		}
 
-		if (PX4_ISFINITE(_trajectory_setpoint.yaw)) {
+		if (!posctl_mode && PX4_ISFINITE(_trajectory_setpoint.yaw)) {
 			yaw_sp_target = matrix::wrap_pi(_trajectory_setpoint.yaw);
 		}
 	}
 
-	// fullvector 平移主要依靠电机倾转实现，姿态目标保持水平，yaw 默认保持切入时航向。
+	// fullvector 平移主要依靠电机倾转实现，定点模式姿态目标固定为零姿态；
+	// 非定点模式姿态目标保持水平，yaw 默认保持切入时航向。
 	// 对姿态目标做限速，避免从自稳切到定点时产生姿态/航向阶跃。
 	Vector3f attitude_sp_target = _current_command.Euler_angles;
 	attitude_sp_target(0) = 0.0f;
