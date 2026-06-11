@@ -88,17 +88,26 @@ bool FullvectorControl::init()
 	return true;
 }
 
-void FullvectorControl::resetPidState()
+void FullvectorControl::resetPositionPidState()
 {
 	// 清空位置/速度环积分和前一拍误差，避免模式切换或参数更新后积分残留。
 	_pos_error_int.zero();
 	_vel_error_int.zero();
 	_pid_state_initialized = false;
+}
 
+void FullvectorControl::resetAttitudePidState()
+{
 	// 清空姿态/角速度环积分和前一拍误差。
 	_att_error_int.zero();
 	_ang_vel_error_int.zero();
 	_att_pid_state_initialized = false;
+}
+
+void FullvectorControl::resetPidState()
+{
+	resetPositionPidState();
+	resetAttitudePidState();
 }
 
 void FullvectorControl::publishSafeActuatorFallback()
@@ -132,6 +141,25 @@ void FullvectorControl::publishSafeActuatorFallback()
 	tilt_safe.control[2] = 0.0f;
 	tilt_safe.control[3] = 0.0f;
 	_motor_tilt_pub_raw.publish(tilt_safe);
+	_last_actuator_output_valid = false;
+}
+
+bool FullvectorControl::publishLastActuatorCommand()
+{
+	if (!_last_actuator_output_valid) {
+		return false;
+	}
+
+	// 重发上一拍输出时刷新时间戳，避免下游认为 actuator 消息本身已经过期。
+	const hrt_abstime now = hrt_absolute_time();
+	_last_motor_output.timestamp_sample = now;
+	_last_motor_output.timestamp = now;
+	_last_tilt_output.timestamp_sample = now;
+	_last_tilt_output.timestamp = now;
+
+	_motor_speed_pub_raw.publish(_last_motor_output);
+	_motor_tilt_pub_raw.publish(_last_tilt_output);
+	return true;
 }
 
 void FullvectorControl::parameters_update(bool force)
@@ -216,6 +244,8 @@ void FullvectorControl::parameters_update(bool force)
 bool FullvectorControl::updateUAVState()
 {
 	_state_age_level = 0;
+	_position_state_age_level = 0;
+	_attitude_state_age_level = 0;
 
 	// 读取本地位置和速度估计，仅在有效标志为真时更新内部状态。
 	if (_vehicle_local_position_sub.updated()) {
@@ -248,29 +278,32 @@ bool FullvectorControl::updateUAVState()
 		_last_angular_velocity_update = _angular_velocity.timestamp;
 	}
 
-	// 所有必要状态都至少更新过一次后，才允许进入控制计算。
-	if ((_last_position_update == 0) || (_last_velocity_update == 0)
-	    || (_last_attitude_update == 0) || (_last_angular_velocity_update == 0)) {
+	// 姿态闭环必须依赖姿态和角速度；位置/速度缺失时后续退化为姿态保持。
+	if ((_last_attitude_update == 0) || (_last_angular_velocity_update == 0)) {
 		return false;
 	}
 
-	const hrt_abstime elapsed_position = hrt_elapsed_time(&_last_position_update);
-	const hrt_abstime elapsed_velocity = hrt_elapsed_time(&_last_velocity_update);
+	// 位置/速度可能在 GPS 拒止或估计器切换时失效，但姿态闭环仍可继续工作。
+	const bool position_available = (_last_position_update != 0) && (_last_velocity_update != 0);
 	const hrt_abstime elapsed_attitude = hrt_elapsed_time(&_last_attitude_update);
 	const hrt_abstime elapsed_ang_vel = hrt_elapsed_time(&_last_angular_velocity_update);
 
-	// 区分“偏旧但可运行”和“严重过期必须失效保护”的状态。
+	// 区分“偏旧告警”“短时保持”和“严重过期失效保护”。
 	constexpr hrt_abstime stale_warn_timeout = 200_ms;
-	constexpr hrt_abstime stale_fail_timeout = 500_ms;
-	const bool aging = (elapsed_position > stale_warn_timeout)
-			  || (elapsed_velocity > stale_warn_timeout)
-			  || (elapsed_attitude > stale_warn_timeout)
-			  || (elapsed_ang_vel > stale_warn_timeout);
-
-	const bool stale_fail = (elapsed_position > stale_fail_timeout)
-			       || (elapsed_velocity > stale_fail_timeout)
-			       || (elapsed_attitude > stale_fail_timeout)
-			       || (elapsed_ang_vel > stale_fail_timeout);
+	constexpr hrt_abstime stale_hold_timeout = 500_ms;
+	constexpr hrt_abstime stale_fail_timeout = 1500_ms;
+	// 如果位置/速度从未可用，直接按严重过期处理，后续跳过位置环而不是停姿态环。
+	const hrt_abstime elapsed_position = position_available ? hrt_elapsed_time(&_last_position_update) :
+					     (stale_fail_timeout + 1);
+	const hrt_abstime elapsed_velocity = position_available ? hrt_elapsed_time(&_last_velocity_update) :
+					    (stale_fail_timeout + 1);
+	const bool position_aging = (elapsed_position > stale_warn_timeout) || (elapsed_velocity > stale_warn_timeout);
+	const bool position_stale = (elapsed_position > stale_hold_timeout) || (elapsed_velocity > stale_hold_timeout);
+	const bool position_fail = (elapsed_position > stale_fail_timeout) || (elapsed_velocity > stale_fail_timeout);
+	const bool attitude_aging = (elapsed_attitude > stale_warn_timeout) || (elapsed_ang_vel > stale_warn_timeout);
+	const bool attitude_stale = (elapsed_attitude > stale_hold_timeout) || (elapsed_ang_vel > stale_hold_timeout);
+	const bool attitude_fail = (elapsed_attitude > stale_fail_timeout) || (elapsed_ang_vel > stale_fail_timeout);
+	const bool aging = position_aging || attitude_aging;
 
 	if (aging) {
 		static hrt_abstime last_stale_warn{0};
@@ -286,7 +319,11 @@ bool FullvectorControl::updateUAVState()
 		}
 	}
 
-	_state_age_level = stale_fail ? 2 : (aging ? 1 : 0);
+	// 分别记录位置类和姿态类状态等级，Run() 中按不同风险采取不同降级策略。
+	_position_state_age_level = position_fail ? 3 : (position_stale ? 2 : (position_aging ? 1 : 0));
+	_attitude_state_age_level = attitude_fail ? 3 : (attitude_stale ? 2 : (attitude_aging ? 1 : 0));
+	_state_age_level = (_position_state_age_level > _attitude_state_age_level) ? _position_state_age_level :
+			   _attitude_state_age_level;
 
 	return true;
 }
@@ -294,6 +331,8 @@ bool FullvectorControl::updateUAVState()
 bool FullvectorControl::updateAttitudeStateOnly()
 {
 	_state_age_level = 0;
+	_position_state_age_level = 0;
+	_attitude_state_age_level = 0;
 
 	// 自稳接管不需要位置/速度闭环，因此只刷新姿态四元数和机体系角速度。
 	if (_vehicle_attitude_sub.updated()) {
@@ -319,8 +358,10 @@ bool FullvectorControl::updateAttitudeStateOnly()
 	const hrt_abstime elapsed_attitude = hrt_elapsed_time(&_last_attitude_update);
 	const hrt_abstime elapsed_ang_vel = hrt_elapsed_time(&_last_angular_velocity_update);
 	constexpr hrt_abstime stale_warn_timeout = 200_ms;
-	constexpr hrt_abstime stale_fail_timeout = 500_ms;
+	constexpr hrt_abstime stale_hold_timeout = 500_ms;
+	constexpr hrt_abstime stale_fail_timeout = 1500_ms;
 	const bool aging = (elapsed_attitude > stale_warn_timeout) || (elapsed_ang_vel > stale_warn_timeout);
+	const bool stale_hold = (elapsed_attitude > stale_hold_timeout) || (elapsed_ang_vel > stale_hold_timeout);
 	const bool stale_fail = (elapsed_attitude > stale_fail_timeout) || (elapsed_ang_vel > stale_fail_timeout);
 
 	if (aging) {
@@ -334,7 +375,8 @@ bool FullvectorControl::updateAttitudeStateOnly()
 		}
 	}
 
-	_state_age_level = stale_fail ? 2 : (aging ? 1 : 0);
+	_attitude_state_age_level = stale_fail ? 3 : (stale_hold ? 2 : (aging ? 1 : 0));
+	_state_age_level = _attitude_state_age_level;
 
 	return true;
 }
@@ -382,6 +424,7 @@ void FullvectorControl::Run()
 
 		_controller_was_active = false;
 		_command_initialized = false;
+		_last_actuator_output_valid = false;
 		return;
 	}
 
@@ -394,6 +437,7 @@ void FullvectorControl::Run()
 
 		_controller_was_active = false;
 		_command_initialized = false;
+		_last_actuator_output_valid = false;
 		return;
 	}
 
@@ -455,15 +499,32 @@ void FullvectorControl::Run()
 		return;
 	}
 
-	// 状态严重过期时进入失效保护，不继续计算控制输出。
-	if (_state_age_level >= 2) {
+	// 姿态或角速度严重过期时进入失效保护，不继续计算控制输出。
+	if (_attitude_state_age_level >= 3) {
 		publishSafeActuatorFallback();
 		resetPidState();
 		_last_run_time = 0;
 		_command_initialized = false;
 
 		if (allow_debug_print) {
-			PX4_WARN("state stale-fail, publishing safe actuator fallback");
+			PX4_WARN("attitude stale-fail, publishing safe actuator fallback");
+			_last_debug_print_time = now;
+		}
+
+		return;
+	}
+
+	// 姿态或角速度短时掉帧时冻结 PID，并重发上一拍输出，避免 500 ms 抖动导致瞬时停桨。
+	if (_attitude_state_age_level >= 2) {
+		if (!publishLastActuatorCommand()) {
+			publishSafeActuatorFallback();
+		}
+
+		resetPidState();
+		_last_run_time = 0;
+
+		if (allow_debug_print) {
+			PX4_WARN("attitude stale, holding last actuator command");
 			_last_debug_print_time = now;
 		}
 
@@ -622,9 +683,21 @@ void FullvectorControl::Run()
 		_last_debug_print_time = now;
 	}
 
-	// 串级控制流程：自稳模式跳过位置环，使用手动油门生成的垂向加速度指令。
-	if (!stabilized_mode) {
+	// 串级控制流程：位置/速度状态失效时跳过位置环，退化为姿态保持和悬停加速度。
+	const bool run_position_control = !stabilized_mode && (_position_state_age_level < 2);
+
+	if (run_position_control) {
 		PositionControl(state_for_control, _current_command, _dt);
+
+	} else if (!stabilized_mode) {
+		// 只清位置/速度环积分；姿态环继续运行，避免位置掉帧带来电机硬归零。
+		resetPositionPidState();
+		_pos_acc_cmd.zero();
+
+		if (allow_debug_print) {
+			PX4_WARN("position stale, skipping position control");
+			_last_debug_print_time = now;
+		}
 	}
 
 	AttitudeControl(state_for_control, _current_command, _dt);
@@ -812,10 +885,12 @@ void FullvectorControl::calculateMotorCommand(const UAVCommand & command)
 	const float acc_to_tilt = sqrtf(2.0f) / (mass_safe * gravity_safe);
 
 	// 根据姿态目标和水平加速度指令计算四个电机的倾转角偏置。
-	alpha_offset1 =  sqrtf(2.0f)*phi_sp + sqrtf(2.0f)*theta_sp + acc_to_tilt * mass_safe * (acc_sp(0) - acc_sp(1)) / 4.0f;
-	alpha_offset2 = -sqrtf(2.0f)*phi_sp - sqrtf(2.0f)*theta_sp - acc_to_tilt * mass_safe * (acc_sp(0) - acc_sp(1)) / 4.0f;
-	alpha_offset3 = -sqrtf(2.0f)*phi_sp + sqrtf(2.0f)*theta_sp - acc_to_tilt * mass_safe * (acc_sp(0) + acc_sp(1)) / 4.0f;
-	alpha_offset4 =  sqrtf(2.0f)*phi_sp - sqrtf(2.0f)*theta_sp + acc_to_tilt * mass_safe * (acc_sp(0) + acc_sp(1)) / 4.0f;
+	// 小角度下 controlAllocation() 中有 a_ned_xy = -R_nb * F_body_xy / m，
+	// 因此期望 NED 水平加速度需要生成反向机体系水平力。
+	alpha_offset1 =  sqrtf(2.0f)*theta_sp + sqrtf(2.0f)*phi_sp - acc_to_tilt * mass_safe * (acc_sp(0) - acc_sp(1)) / 4.0f;
+	alpha_offset2 = -sqrtf(2.0f)*theta_sp - sqrtf(2.0f)*phi_sp + acc_to_tilt * mass_safe * (acc_sp(0) - acc_sp(1)) / 4.0f;
+	alpha_offset3 = -sqrtf(2.0f)*theta_sp + sqrtf(2.0f)*phi_sp + acc_to_tilt * mass_safe * (acc_sp(0) + acc_sp(1)) / 4.0f;
+	alpha_offset4 =  sqrtf(2.0f)*theta_sp - sqrtf(2.0f)*phi_sp - acc_to_tilt * mass_safe * (acc_sp(0) + acc_sp(1)) / 4.0f;
 
 	// 限制倾转角，避免指令超过机构允许范围。
 	alpha_offset1 = math::constrain(alpha_offset1, -tilt_angle_max_rad, tilt_angle_max_rad);
@@ -870,7 +945,6 @@ void FullvectorControl::calculateMotorCommand(const UAVCommand & command)
 	motor_speed.control[1] = omega_to_normalized_thrust(motor_2);
 	motor_speed.control[2] = omega_to_normalized_thrust(motor_3);
 	motor_speed.control[3] = omega_to_normalized_thrust(motor_4);
-	_motor_speed_pub_raw.publish(motor_speed);
 
 	// actuator_servos 期望归一化位置 [-1, 1]，这里按最大倾转角归一化。
 	actuator_servos_s motor_tilt{};
@@ -886,6 +960,12 @@ void FullvectorControl::calculateMotorCommand(const UAVCommand & command)
 	motor_tilt.control[2] = math::constrain(alpha_offset3 / tilt_angle_max_rad, -1.0f, 1.0f);
 	motor_tilt.control[3] = math::constrain(alpha_offset4 / tilt_angle_max_rad, -1.0f, 1.0f);
 
+	// 缓存本拍有效输出，供短时姿态/角速度话题掉帧时保持使用。
+	_last_motor_output = motor_speed;
+	_last_tilt_output = motor_tilt;
+	_last_actuator_output_valid = true;
+
+	_motor_speed_pub_raw.publish(motor_speed);
 	_motor_tilt_pub_raw.publish(motor_tilt);
 }
 

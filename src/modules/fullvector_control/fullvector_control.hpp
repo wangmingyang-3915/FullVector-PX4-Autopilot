@@ -141,8 +141,13 @@ private:
 	 * @param force 为 true 时即使没有 parameter_update 通知也强制刷新。
 	 */
 	void parameters_update(bool force);
+	// 分别重置位置/速度环和姿态/角速度环，便于状态降级时只清对应积分。
+	void resetPositionPidState();
+	void resetAttitudePidState();
 	void resetPidState();
 	void publishSafeActuatorFallback();
+	// 短时状态掉帧时重发上一拍有效执行器输出，避免瞬间发布 0。
+	bool publishLastActuatorCommand();
 
 	bool updateUAVState();
 	// 自稳模式用于 GPS 拒止或无本地位置场景，只要求姿态和角速度有效。
@@ -264,7 +269,15 @@ private:
 
 	bool _controller_was_active{false};
 	bool _command_initialized{false};
-	uint8_t _state_age_level{0}; // 0=fresh, 1=aging, 2=stale-fail
+	// 状态新鲜度等级：0=新鲜，1=开始老化告警，2=短时过期保持上一拍，3=严重过期失效保护。
+	uint8_t _state_age_level{0};
+	// 位置/速度和姿态/角速度分开评级，避免位置掉帧直接触发姿态控制停机。
+	uint8_t _position_state_age_level{0};
+	uint8_t _attitude_state_age_level{0};
+	// 保存上一拍有效的电机和舵机输出，供短时姿态话题掉帧时平滑保持。
+	bool _last_actuator_output_valid{false};
+	actuator_motors_s _last_motor_output{};
+	actuator_servos_s _last_tilt_output{};
 
 	UAVStates _current_state;		// 供控制器使用的最新状态。
 	UAVCommand _current_command;		// 供控制器使用的当前目标命令。
