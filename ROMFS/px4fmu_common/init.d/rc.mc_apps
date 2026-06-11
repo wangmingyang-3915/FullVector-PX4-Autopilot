@@ -54,8 +54,8 @@ fi
 control_allocator start
 
 #
-# Start Fullvector controller if enabled. The module remains silent outside
-# POSCTL/OFFBOARD so PX4 native controllers own the other flight modes.
+# 启动 Fullvector 控制器。启用后，模块在 POSCTL/OFFBOARD/STAB 模式下接管执行器输出；
+# 其他飞行模式保持静默，由 PX4 原生控制器继续负责。
 #
 if param compare -s FV_ENABLE 1
 then

@@ -1,4 +1,4 @@
-﻿/****************************************************************************
+/****************************************************************************
  *
  *   Copyright (c) 2013-2019 PX4 Development Team. All rights reserved.
  *
@@ -142,6 +142,103 @@ void FullvectorControl::publishSafeActuatorFallback()
 	tilt_safe.control[3] = 0.0f;
 	_motor_tilt_pub_raw.publish(tilt_safe);
 	_last_actuator_output_valid = false;
+}
+
+void FullvectorControl::publishNeutralTiltServos()
+{
+	// 切回 PX4 原生控制器时，只负责让倾转舵机回中位，电机交给原生控制链路。
+	actuator_servos_s tilt_neutral{};
+
+	// 刷新时间戳，表示这是一帧新的舵机中立命令。
+	tilt_neutral.timestamp_sample = hrt_absolute_time();
+	tilt_neutral.timestamp = tilt_neutral.timestamp_sample;
+
+	// 默认不控制其它舵机通道，避免覆盖非倾转机构。
+	for (int i = 0; i < actuator_servos_s::NUM_CONTROLS; i++) {
+		tilt_neutral.control[i] = NAN;
+	}
+
+	// 前 4 路是倾转舵机，0.0f 表示归一化中立位。
+	for (int i = 0; i < 4 && i < actuator_servos_s::NUM_CONTROLS; i++) {
+		tilt_neutral.control[i] = 0.0f;
+	}
+
+	// 发布中立位，并清除上一帧 fullvector 执行器缓存。
+	_motor_tilt_pub_raw.publish(tilt_neutral);
+	_last_actuator_output_valid = false;
+}
+
+void FullvectorControl::publishFullvectorControlStatus(bool fullvector_active, bool native_requested,
+		bool rc_switch_valid, float rc_switch_value)
+{
+	// 发布当前执行器输出归属，供 control_allocator 判断是否让出原生输出。
+	fullvector_control_status_s status{};
+
+	// 时间戳用于下游判断该状态是否新鲜。
+	status.timestamp = hrt_absolute_time();
+
+	// true 表示本周期 fullvector 接管 actuator 输出。
+	status.fullvector_active = fullvector_active;
+
+	// true 表示遥控器请求切回 PX4 原生控制器。
+	status.native_requested = native_requested;
+
+	// true 表示本周期读到了有效的 AUX 切换通道。
+	status.rc_switch_valid = rc_switch_valid;
+
+	// 记录 AUX 实际值；无效时用 NaN 表示。
+	status.rc_switch_value = rc_switch_valid ? rc_switch_value : NAN;
+	_fullvector_control_status_pub.publish(status);
+}
+
+bool FullvectorControl::evaluateNativeControllerRequest(float &rc_switch_value, bool &rc_switch_valid)
+{
+	// 默认状态：没有有效拨杆值，也不请求切回原生控制器。
+	rc_switch_value = NAN;
+	rc_switch_valid = false;
+
+	// 参数关闭时，不启用遥控切换。
+	if (!_param_fv_rc_sw_en.get()) {
+		return false;
+	}
+
+	// 读取最新手动控制输入。
+	_manual_control_setpoint_sub.update(&_manual_control_setpoint);
+
+	// 手动输入无效时，不根据 AUX 做切换判断。
+	if (!_manual_control_setpoint.valid) {
+		return false;
+	}
+
+	// 将参数里的 1~6 通道号映射到 aux1~aux6。
+	const int channel = math::constrain(_param_fv_rc_sw_ch.get(), 1, 6);
+	float value = NAN;
+
+	// 按配置读取指定 AUX 通道值。
+	switch (channel) {
+	case 1: value = _manual_control_setpoint.aux1; break;
+	case 2: value = _manual_control_setpoint.aux2; break;
+	case 3: value = _manual_control_setpoint.aux3; break;
+	case 4: value = _manual_control_setpoint.aux4; break;
+	case 5: value = _manual_control_setpoint.aux5; break;
+	case 6: value = _manual_control_setpoint.aux6; break;
+	default: break;
+	}
+
+	// AUX 未映射或无效时，不触发切换。
+	if (!PX4_ISFINITE(value)) {
+		return false;
+	}
+
+	// 约束到标准拨杆范围，并标记通道有效。
+	rc_switch_value = math::constrain(value, -1.0f, 1.0f);
+	rc_switch_valid = true;
+
+	// 按阈值判断是否请求 PX4 原生控制器。
+	const bool high_position = rc_switch_value > _param_fv_rc_sw_thr.get();
+
+	// 反向参数用于适配遥控器拨杆方向。
+	return _param_fv_rc_sw_rev.get() ? !high_position : high_position;
 }
 
 bool FullvectorControl::publishLastActuatorCommand()
@@ -401,6 +498,11 @@ void FullvectorControl::Run()
 	_vehicle_status_sub.update(&_vehicle_status);
 	_trajectory_setpoint_sub.update(&_trajectory_setpoint);
 
+	float rc_switch_value = NAN;
+	bool rc_switch_valid = false;
+	// 先读取遥控器切换请求，确保本周期输出前完成仲裁。
+	const bool native_requested = evaluateNativeControllerRequest(rc_switch_value, rc_switch_valid);
+
 	const bool fv_enabled = (_param_fv_enable.get() == 1);
 	const bool armed = _control_mode.flag_armed;
 	const bool posctl_mode = (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_POSCTL);
@@ -412,7 +514,10 @@ void FullvectorControl::Run()
 				      || (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_TERMINATION);
 	// 状态估计是否可用由状态更新函数判断；是否进入 fullvector 闭环由飞行模式显式门控。
 	const bool fullvector_mode_allowed = posctl_mode || offboard_mode || stabilized_mode;
+	// 模块基础门控：参数启用、已解锁、未进入终止模式。
 	const bool module_active = fv_enabled && armed && !termination_mode;
+	// 本周期是否真正接管执行器输出。
+	const bool fullvector_active = module_active && fullvector_mode_allowed && !native_requested;
 
 	if (!module_active) {
 		// 模块未启用、未解锁或终止模式时，不发布控制输出。
@@ -425,6 +530,8 @@ void FullvectorControl::Run()
 		_controller_was_active = false;
 		_command_initialized = false;
 		_last_actuator_output_valid = false;
+		// 发布未接管状态，让 control_allocator 恢复原生输出。
+		publishFullvectorControlStatus(false, native_requested, rc_switch_valid, rc_switch_value);
 		return;
 	}
 
@@ -438,8 +545,32 @@ void FullvectorControl::Run()
 		_controller_was_active = false;
 		_command_initialized = false;
 		_last_actuator_output_valid = false;
+		// 飞行模式不允许 fullvector 接管，声明 fullvector_active=false。
+		publishFullvectorControlStatus(false, native_requested, rc_switch_valid, rc_switch_value);
 		return;
 	}
+
+	if (native_requested) {
+		// 遥控器请求原生控制器，本周期不再执行 fullvector 闭环。
+		if (_controller_was_active) {
+			// 清空控制器历史状态，避免下次切回时带入旧误差。
+			resetPidState();
+			_last_run_time = 0;
+		}
+
+		// 切换瞬间先让倾转舵机回中位。
+		publishNeutralTiltServos();
+		// 标记 fullvector 已退出接管。
+		_controller_was_active = false;
+		_command_initialized = false;
+		_last_actuator_output_valid = false;
+		// 通知 control_allocator 恢复 PX4 原生输出。
+		publishFullvectorControlStatus(false, true, rc_switch_valid, rc_switch_value);
+		return;
+	}
+
+	// fullvector 接管时发布 active 状态，让 control_allocator 让出 actuator 输出。
+	publishFullvectorControlStatus(fullvector_active, false, rc_switch_valid, rc_switch_value);
 
 	const hrt_abstime now = hrt_absolute_time();
 

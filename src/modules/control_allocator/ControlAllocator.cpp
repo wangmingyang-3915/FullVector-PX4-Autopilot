@@ -644,13 +644,24 @@ ControlAllocator::publish_control_allocator_status(int matrix_index)
 void
 ControlAllocator::publish_actuator_controls()
 {
-	// fullvector 在这些模式下直接发布 actuator_motors/actuator_servos，控制分配器必须让出最终执行器输出。
+	// 先读取 fullvector 的输出归属状态，判断本周期是否需要让出 actuator 输出。
+	_fullvector_control_status_sub.update(&_fullvector_control_status);
+	const fullvector_control_status_s &fullvector_control_status = _fullvector_control_status;
+	// 状态超时表示 fullvector 可能失活，此时恢复 PX4 原生输出。
+	const bool fullvector_status_fresh = (fullvector_control_status.timestamp != 0)
+					     && (hrt_elapsed_time(&fullvector_control_status.timestamp) < 200_ms);
+
+	// 只有总开关启用、状态新鲜、fullvector 声明接管、且处于允许模式时，才让出输出。
+	// 遥控器切回原生控制器时，fullvector_active 会变为 false。
 	const bool fullvector_controls_actuators = (_fv_enable == 1)
+			&& fullvector_status_fresh
+			&& fullvector_control_status.fullvector_active
 			&& ((_nav_state == vehicle_status_s::NAVIGATION_STATE_POSCTL)
 			    || (_nav_state == vehicle_status_s::NAVIGATION_STATE_OFFBOARD)
 			    || (_nav_state == vehicle_status_s::NAVIGATION_STATE_STAB));
 
 	if (fullvector_controls_actuators) {
+		// fullvector 接管时，本周期不发布 PX4 原生 actuator 输出。
 		return;
 	}
 

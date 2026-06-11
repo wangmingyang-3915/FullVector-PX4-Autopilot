@@ -67,7 +67,9 @@
 #include <uORB/topics/vehicle_angular_acceleration_setpoint.h>
 #include <uORB/topics/takeoff_status.h>
 #include <uORB/topics/vehicle_land_detected.h>
-// 自稳模式下不使用 trajectory_setpoint，而是直接读取手动摇杆输入生成姿态/油门目标。
+// 发布 fullvector 是否接管执行器输出的状态，供 control_allocator 做输出仲裁。
+#include <uORB/topics/fullvector_control_status.h>
+// 读取遥控器 AUX 拨杆输入，用于请求切回 PX4 原生控制器。
 #include <uORB/topics/manual_control_setpoint.h>
 // 订阅 PX4 当前飞行模式和轨迹目标；模块只在 Run() 中允许的模式下发布 fullvector 输出。
 #include <uORB/topics/trajectory_setpoint.h>
@@ -95,7 +97,7 @@ struct UAVCommand {
 	Vector3f velocity;                      // 期望 NED 速度，当前主要用于缓存上层轨迹目标。
 	Vector3f acceleration;                  // 期望 NED 加速度，当前主要用于缓存上层轨迹目标。
 	Vector3f Euler_angles;          	// 期望欧拉角（roll, pitch, yaw）。
-	Vector3f angular_velocity;              // 姿态外环生成的期望角速度。
+	Vector3f angular_velocity;              // 期望角速度。
 };
 
 class FullvectorControl : public ModuleBase<FullvectorControl>, public ModuleParams,
@@ -141,23 +143,28 @@ private:
 	 * @param force 为 true 时即使没有 parameter_update 通知也强制刷新。
 	 */
 	void parameters_update(bool force);
-	// 分别重置位置/速度环和姿态/角速度环，便于状态降级时只清对应积分。
-	void resetPositionPidState();
-	void resetAttitudePidState();
 	void resetPidState();
 	void publishSafeActuatorFallback();
-	// 短时状态掉帧时重发上一拍有效执行器输出，避免瞬间发布 0。
-	bool publishLastActuatorCommand();
+	// 切回原生控制器时，先让前 4 路倾转舵机回到中立位。
+	void publishNeutralTiltServos();
+	// 每个周期发布 fullvector 输出归属和遥控切换状态。
+	void publishFullvectorControlStatus(bool fullvector_active, bool native_requested, bool rc_switch_valid,
+					   float rc_switch_value);
+	// 读取配置的 AUX 通道，判断遥控器是否请求 PX4 原生控制器接管。
+	bool evaluateNativeControllerRequest(float &rc_switch_value, bool &rc_switch_valid);
 
 	bool updateUAVState();
-	// 自稳模式用于 GPS 拒止或无本地位置场景，只要求姿态和角速度有效。
-	bool updateAttitudeStateOnly();
 
 	// 统计 Run() 单次控制循环耗时。
 	perf_counter_t _loop_perf{perf_alloc(PC_ELAPSED, MODULE_NAME": loop")};
 
 	DEFINE_PARAMETERS(
 		(ParamBool<px4::params::FV_ENABLE>) _param_fv_enable,
+		// 遥控切换参数：启用开关、AUX 通道号、阈值和方向反转。
+		(ParamBool<px4::params::FV_RC_SW_EN>) _param_fv_rc_sw_en,
+		(ParamInt<px4::params::FV_RC_SW_CH>) _param_fv_rc_sw_ch,
+		(ParamFloat<px4::params::FV_RC_SW_THR>) _param_fv_rc_sw_thr,
+		(ParamBool<px4::params::FV_RC_SW_REV>) _param_fv_rc_sw_rev,
 		(ParamInt<px4::params::PRINT_A_EN>) _param_print_msg_a_en,
 		(ParamFloat<px4::params::PRINT_NUM_VALUE>) _param_print_num_value,
 		(ParamFloat<px4::params::FV_POS_P_X>)             _param_fv_pos_p_x,
@@ -214,6 +221,8 @@ private:
 	// actuator_motors/actuator_servos 发布的是 PX4 期望的归一化输出，前四路对应四个电机和四个倾转舵机。
 	uORB::Publication<actuator_servos_s> _motor_tilt_pub_raw{ORB_ID(actuator_servos)};
 	uORB::Publication<actuator_motors_s> _motor_speed_pub_raw{ORB_ID(actuator_motors)};
+	// 输出归属状态：control_allocator 根据它决定是否让出 PX4 原生 actuator 输出。
+	uORB::Publication<fullvector_control_status_s> _fullvector_control_status_pub{ORB_ID(fullvector_control_status)};
 
 	// 控制器运行所需的状态、模式、目标和调试输入订阅。
 	uORB::Subscription _vehicle_local_position_sub{ORB_ID(vehicle_local_position)};
@@ -229,7 +238,7 @@ private:
 	uORB::Subscription _actuator_motors_sub{ORB_ID(actuator_motors)};
 	uORB::Subscription _takeoff_status_sub{ORB_ID(takeoff_status)};
 	uORB::Subscription _vehicle_land_detected_sub{ORB_ID(vehicle_land_detected)};
-	// 自稳 fullvector 使用手动输入替代位置环输出和 trajectory_setpoint。
+	// 遥控器 AUX 输入，供 evaluateNativeControllerRequest() 判断切换请求。
 	uORB::Subscription _manual_control_setpoint_sub{ORB_ID(manual_control_setpoint)};
 
 	// 最近一次从 uORB 读取到的原始 PX4 消息。
@@ -237,7 +246,7 @@ private:
 	vehicle_attitude_s _attitude{};
 	vehicle_angular_velocity_s _angular_velocity{};
 	vehicle_control_mode_s _control_mode{};
-	// 缓存最新手动摇杆输入，STAB 模式下用于生成姿态目标和垂向加速度。
+	// 缓存最新手动控制输入，包含 aux1~aux6 切换通道。
 	manual_control_setpoint_s _manual_control_setpoint{};
 	// 缓存最新飞行状态和轨迹目标，Run() 中统一转换为 fullvector 控制命令。
 	vehicle_status_s _vehicle_status{};
@@ -269,15 +278,7 @@ private:
 
 	bool _controller_was_active{false};
 	bool _command_initialized{false};
-	// 状态新鲜度等级：0=新鲜，1=开始老化告警，2=短时过期保持上一拍，3=严重过期失效保护。
-	uint8_t _state_age_level{0};
-	// 位置/速度和姿态/角速度分开评级，避免位置掉帧直接触发姿态控制停机。
-	uint8_t _position_state_age_level{0};
-	uint8_t _attitude_state_age_level{0};
-	// 保存上一拍有效的电机和舵机输出，供短时姿态话题掉帧时平滑保持。
-	bool _last_actuator_output_valid{false};
-	actuator_motors_s _last_motor_output{};
-	actuator_servos_s _last_tilt_output{};
+	uint8_t _state_age_level{0}; // 0=fresh, 1=aging, 2=stale-fail
 
 	UAVStates _current_state;		// 供控制器使用的最新状态。
 	UAVCommand _current_command;		// 供控制器使用的当前目标命令。

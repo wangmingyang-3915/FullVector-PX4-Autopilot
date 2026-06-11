@@ -599,3 +599,43 @@ parameters:
             启用或关闭 fullvector_control 的执行器输出。
             只有该参数启用、飞机已解锁、未进入终止模式，并且当前导航状态被模块允许时，
             控制器才会发布电机和倾转舵机输出。
+
+      FV_RC_SW_EN:
+        type: boolean
+        default: 1
+        description:
+          short: 启用遥控器控制器切换拨杆
+          long: |
+            启用后，fullvector_control 会读取指定 AUX 通道作为救援切换开关。
+            默认状态由 fullvector 接管；拨杆达到阈值后切回 PX4 原生控制器，同时倾转舵机回中位。
+
+      FV_RC_SW_CH:
+        type: int32
+        default: 5
+        min: 1
+        max: 6
+        description:
+          short: 遥控器切换 AUX 通道
+          long: |
+            选择 manual_control_setpoint 的 aux1 至 aux6 作为控制器切换输入。
+            1 对应 aux1，6 对应 aux6。
+
+      FV_RC_SW_THR:
+        type: float
+        default: 0.5
+        decimal: 2
+        min: -1.0
+        max: 1.0
+        description:
+          short: 遥控器切换阈值
+          long: |
+            当选定 AUX 通道值大于该阈值时，请求切回 PX4 原生控制器。
+            如果启用 FV_RC_SW_REV，则判定方向反转。
+
+      FV_RC_SW_REV:
+        type: boolean
+        default: 0
+        description:
+          short: 反转遥控器切换方向
+          long: |
+            关闭时，高位请求 PX4 原生控制器；开启时，低位请求 PX4 原生控制器。
