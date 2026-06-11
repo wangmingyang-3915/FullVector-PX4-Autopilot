@@ -143,8 +143,11 @@ private:
 	 * @param force 为 true 时即使没有 parameter_update 通知也强制刷新。
 	 */
 	void parameters_update(bool force);
+	void resetPositionPidState();
+	void resetAttitudePidState();
 	void resetPidState();
 	void publishSafeActuatorFallback();
+	bool publishLastActuatorCommand();
 	// 切回原生控制器时，先让前 4 路倾转舵机回到中立位。
 	void publishNeutralTiltServos();
 	// 每个周期发布 fullvector 输出归属和遥控切换状态。
@@ -154,6 +157,7 @@ private:
 	bool evaluateNativeControllerRequest(float &rc_switch_value, bool &rc_switch_valid);
 
 	bool updateUAVState();
+	bool updateAttitudeStateOnly();
 
 	// 统计 Run() 单次控制循环耗时。
 	perf_counter_t _loop_perf{perf_alloc(PC_ELAPSED, MODULE_NAME": loop")};
@@ -278,7 +282,12 @@ private:
 
 	bool _controller_was_active{false};
 	bool _command_initialized{false};
+	actuator_motors_s _last_motor_output{};
+	actuator_servos_s _last_tilt_output{};
+	bool _last_actuator_output_valid{false};
 	uint8_t _state_age_level{0}; // 0=fresh, 1=aging, 2=stale-fail
+	uint8_t _position_state_age_level{0};
+	uint8_t _attitude_state_age_level{0};
 
 	UAVStates _current_state;		// 供控制器使用的最新状态。
 	UAVCommand _current_command;		// 供控制器使用的当前目标命令。

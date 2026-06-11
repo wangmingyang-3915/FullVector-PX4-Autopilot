@@ -211,7 +211,7 @@ bool FullvectorControl::evaluateNativeControllerRequest(float &rc_switch_value, 
 	}
 
 	// 将参数里的 1~6 通道号映射到 aux1~aux6。
-	const int channel = math::constrain(_param_fv_rc_sw_ch.get(), 1, 6);
+	const int channel = math::constrain(_param_fv_rc_sw_ch.get(), int32_t{1}, int32_t{6});
 	float value = NAN;
 
 	// 按配置读取指定 AUX 通道值。
