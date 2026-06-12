@@ -281,9 +281,15 @@ MulticopterAttitudeControl::Run()
 		// vehicle is a tailsitter in transition mode
 		const bool is_tailsitter_transition = (_vtol_tailsitter && _vtol_in_transition_mode);
 
-		// fullvector 自稳接管时，原生姿态控制器不再发布 vehicle_rates_setpoint。
+		// 只有 fullvector 当前实际接管输出时才静默原生姿态控制器；拨杆切回原生时立即恢复。
+		fullvector_control_status_s fullvector_control_status{};
+		_fullvector_control_status_sub.update(&fullvector_control_status);
+		const bool fullvector_status_fresh = (fullvector_control_status.timestamp != 0)
+						    && (hrt_elapsed_time(&fullvector_control_status.timestamp) < 200_ms);
 		const bool fullvector_stabilized = (_param_fv_enable.get() == 1)
-						   && (_nav_state == vehicle_status_s::NAVIGATION_STATE_STAB);
+						   && (_nav_state == vehicle_status_s::NAVIGATION_STATE_STAB)
+						   && fullvector_status_fresh
+						   && fullvector_control_status.fullvector_active;
 		bool run_att_ctrl = _vehicle_control_mode.flag_control_attitude_enabled
 				    && (is_hovering || is_tailsitter_transition)
 				    && !fullvector_stabilized;

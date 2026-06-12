@@ -130,7 +130,7 @@ public:
 	 * @param state current UAV state
 	 * @param command desired command
 	 */
-	void AttitudeControl(const UAVStates & state, UAVCommand & command, const float dt);
+	void AttitudeControl(const UAVStates & state, UAVCommand & command, const float dt, bool stabilized_mode);
 
 	void calculateMotorCommand(const UAVCommand & command);
 	void controlAllocation(const UAVStates & state, const UAVCommand & command);

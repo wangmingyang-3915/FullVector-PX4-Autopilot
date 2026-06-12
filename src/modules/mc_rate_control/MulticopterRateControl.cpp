@@ -146,11 +146,17 @@ MulticopterRateControl::Run()
 
 		_vehicle_status_sub.update(&_vehicle_status);
 
+		fullvector_control_status_s fullvector_control_status{};
+		_fullvector_control_status_sub.update(&fullvector_control_status);
+		const bool fullvector_status_fresh = (fullvector_control_status.timestamp != 0)
+						    && (hrt_elapsed_time(&fullvector_control_status.timestamp) < 200_ms);
 		const bool fullvector_stabilized = (_param_fv_enable.get() == 1)
-						   && (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_STAB);
+						   && (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_STAB)
+						   && fullvector_status_fresh
+						   && fullvector_control_status.fullvector_active;
 
 		if (fullvector_stabilized) {
-			// fullvector 自稳接管时，停止原生角速度控制器发布 torque/thrust setpoint。
+			// fullvector 自稳实际接管时，停止原生角速度控制器发布 torque/thrust setpoint。
 			_rate_control.resetIntegral();
 			perf_end(_loop_perf);
 			return;

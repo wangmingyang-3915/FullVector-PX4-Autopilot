@@ -611,7 +611,7 @@ parameters:
 
       FV_RC_SW_CH:
         type: int32
-        default: 2
+        default: 5
         min: 1
         max: 6
         description:
