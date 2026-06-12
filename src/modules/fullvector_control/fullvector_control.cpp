@@ -1066,8 +1066,8 @@ void FullvectorControl::calculateMotorCommand(const UAVCommand & command)
 	motor_3 = math::constrain(motor_3, 0.0f, motor_speed_max);
 	motor_4 = math::constrain(motor_4, 0.0f, motor_speed_max);
 
-	// actuator_motors 期望归一化推力 [-1, 1]；内部 motor_* 仍按角速度计算，
-	// 按 T ~ omega^2 映射到悬停油门附近，避免用物理角速度上限直接缩放导致输出接近 0。
+	// actuator_motors 字段支持 [-1, 1]，普通非可逆电机应发布 [0, 1] 归一化正推力；
+	// 内部 motor_* 仍按角速度计算，再按 T ~ omega^2 映射到悬停油门附近。
 	actuator_motors_s motor_speed{};
 	motor_speed.timestamp_sample = hrt_absolute_time();
 	motor_speed.timestamp = hrt_absolute_time();
