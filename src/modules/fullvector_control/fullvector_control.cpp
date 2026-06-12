@@ -718,22 +718,32 @@ void FullvectorControl::Run()
 	if (stabilized_mode) {
 		_manual_control_setpoint_sub.update(&_manual_control_setpoint);
 
-		// 第一版自稳 fullvector 采用保守限幅：最大姿态约 20 度，偏航为速率输入。
-		constexpr float max_manual_tilt_rad = 0.35f; // about 20 deg
+		// 第一版自稳 fullvector 采用保守限幅：最大姿态约 30 度，偏航为速率输入。
+		constexpr float max_manual_tilt_rad = 0.52f; // about 30 deg
 		constexpr float max_manual_yaw_rate = 1.0f; // rad/s
 		constexpr float max_manual_xy_accel = 2.0f; // m/s^2
 		constexpr float max_manual_vertical_accel = 4.0f; // m/s^2
-		// 手动输入可能为 NaN，所有通道先约束到 [-1, 1]，无效时回中。
+		// 手动输入可能为 NaN：姿态/偏航通道为 [-1, 1]，油门通道为 [0, 1]。
 		const float roll_stick = PX4_ISFINITE(_manual_control_setpoint.roll) ?
 					 math::constrain(_manual_control_setpoint.roll, -1.0f, 1.0f) : 0.0f;
 		const float pitch_stick = PX4_ISFINITE(_manual_control_setpoint.pitch) ?
 					  math::constrain(_manual_control_setpoint.pitch, -1.0f, 1.0f) : 0.0f;
 		const float yaw_stick = PX4_ISFINITE(_manual_control_setpoint.yaw) ?
 					math::constrain(_manual_control_setpoint.yaw, -1.0f, 1.0f) : 0.0f;
-		const float throttle_stick = PX4_ISFINITE(_manual_control_setpoint.throttle) ?
-					     math::constrain(_manual_control_setpoint.throttle, -1.0f, 1.0f) : 0.0f;
-		const float throttle = math::constrain((throttle_stick + 1.0f) * 0.5f, 0.0f, 1.0f);
+		const float throttle = PX4_ISFINITE(_manual_control_setpoint.throttle) ?
+				       math::constrain(_manual_control_setpoint.throttle, 0.0f, 1.0f) : 0.0f;
 		const float hover_throttle = math::constrain(_param_fv_hover_thr.get(), 0.05f, 0.95f);
+
+		// 油门杆到底时不进入悬停基线计算，保持电机在最小 PWM。
+		constexpr float manual_throttle_idle_threshold = 0.02f;
+
+		if (throttle <= manual_throttle_idle_threshold) {
+			publishSafeActuatorFallback();
+			resetPidState();
+			_last_run_time = 0;
+			_command_initialized = false;
+			return;
+		}
 
 		// roll 右杆为正；pitch 前推为正，但 PX4/NED 中机头下压对应负 pitch，因此取负号。
 		attitude_sp_target(0) = roll_stick * max_manual_tilt_rad;
