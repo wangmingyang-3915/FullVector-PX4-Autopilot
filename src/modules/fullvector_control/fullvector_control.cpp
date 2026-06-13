@@ -1040,16 +1040,16 @@ void FullvectorControl::AttitudeControl(const UAVStates & state, UAVCommand & co
 
 void FullvectorControl::calculateMotorCommand(const UAVCommand & command)
 {
-	// 读取期望姿态角；当前电机倾转角主要使用 roll/pitch。
+	// 读取期望姿态角；当前电机倾转角主要使用 roll/pitch，yaw 通过公共倾转补偿参与。
 	const float phi_sp = command.Euler_angles(0);
 	const float theta_sp = command.Euler_angles(1);
-	const float psi_sp = command.Euler_angles(2);
-	(void)psi_sp;
 
 	// 使用前级位置环输出和姿态环输出。
 	const Vector3f &acc_sp = _pos_acc_cmd;
 	const Vector3f &ang_acc_sp = _att_ang_acc_cmd;
-	constexpr float tilt_angle_max_rad = 0.52f;
+	constexpr float tilt_angle_max_rad = 0.35f;
+	constexpr float yaw_tilt_max_rad = 0.175f;
+	constexpr float yaw_motor_mix_weight = 0.35f;
 
 	// 根据悬停推力估算基础电机角速度，K_F 太小时做保护。
 	const float kf_safe = math::max(K_F, 1e-6f);
@@ -1065,19 +1065,13 @@ void FullvectorControl::calculateMotorCommand(const UAVCommand & command)
 	//力到倾角的转换系数
 	const float acc_to_tilt = sqrtf(2.0f) / (mass_safe * gravity_safe);
 
-	// 根据姿态目标和水平加速度指令计算四个电机的倾转角偏置。
+	// 根据姿态目标和水平加速度指令计算四个电机的基础倾转角偏置。
 	// 小角度下 controlAllocation() 中有 a_ned_xy = -R_nb * F_body_xy / m，
 	// 因此期望 NED 水平加速度需要生成反向机体系水平力。
-	alpha_offset1 =  sqrtf(2.0f)*theta_sp + sqrtf(2.0f)*phi_sp - acc_to_tilt * mass_safe * (acc_sp(0) - acc_sp(1)) / 4.0f;
-	alpha_offset2 = -sqrtf(2.0f)*theta_sp - sqrtf(2.0f)*phi_sp + acc_to_tilt * mass_safe * (acc_sp(0) - acc_sp(1)) / 4.0f;
-	alpha_offset3 = -sqrtf(2.0f)*theta_sp + sqrtf(2.0f)*phi_sp + acc_to_tilt * mass_safe * (acc_sp(0) + acc_sp(1)) / 4.0f;
-	alpha_offset4 =  sqrtf(2.0f)*theta_sp - sqrtf(2.0f)*phi_sp - acc_to_tilt * mass_safe * (acc_sp(0) + acc_sp(1)) / 4.0f;
-
-	// 限制倾转角，避免指令超过机构允许范围。
-	alpha_offset1 = math::constrain(alpha_offset1, -tilt_angle_max_rad, tilt_angle_max_rad);
-	alpha_offset2 = math::constrain(alpha_offset2, -tilt_angle_max_rad, tilt_angle_max_rad);
-	alpha_offset3 = math::constrain(alpha_offset3, -tilt_angle_max_rad, tilt_angle_max_rad);
-	alpha_offset4 = math::constrain(alpha_offset4, -tilt_angle_max_rad, tilt_angle_max_rad);
+	const float alpha_base1 =  sqrtf(2.0f)*theta_sp + sqrtf(2.0f)*phi_sp - acc_to_tilt * mass_safe * (acc_sp(0) - acc_sp(1)) / 4.0f;
+	const float alpha_base2 = -sqrtf(2.0f)*theta_sp - sqrtf(2.0f)*phi_sp + acc_to_tilt * mass_safe * (acc_sp(0) - acc_sp(1)) / 4.0f;
+	const float alpha_base3 = -sqrtf(2.0f)*theta_sp + sqrtf(2.0f)*phi_sp + acc_to_tilt * mass_safe * (acc_sp(0) + acc_sp(1)) / 4.0f;
+	const float alpha_base4 =  sqrtf(2.0f)*theta_sp - sqrtf(2.0f)*phi_sp - acc_to_tilt * mass_safe * (acc_sp(0) + acc_sp(1)) / 4.0f;
 
 
 	const auto signed_sqrt = [](float value) {
@@ -1087,7 +1081,7 @@ void FullvectorControl::calculateMotorCommand(const UAVCommand & command)
 	// 将期望角加速度和垂向加速度换算为各控制通道对应的电机角速度增量。
 	const float w_roll = signed_sqrt((I_xx * ang_acc_sp(0)) / (4.0f * kf_safe * arm_d));
 	const float w_pitch = signed_sqrt((I_yy * ang_acc_sp(1)) / (4.0f * kf_safe * arm_d));
-	const float w_yaw = signed_sqrt((I_zz * ang_acc_sp(2)) / (4.0f * kf_safe * distance_safe));
+	const float w_yaw = yaw_motor_mix_weight * signed_sqrt((I_zz * ang_acc_sp(2)) / (4.0f * kf_safe * distance_safe));
 	const float w_fz = signed_sqrt((mass_safe * (gravity_safe - acc_sp(2))) / (4.0f * kf_safe));
 
 	// 将姿态角加速度和垂向加速度叠加到四个电机角速度命令。
@@ -1103,6 +1097,19 @@ void FullvectorControl::calculateMotorCommand(const UAVCommand & command)
 	motor_2 = math::constrain(motor_2, 0.0f, motor_speed_max);
 	motor_3 = math::constrain(motor_3, 0.0f, motor_speed_max);
 	motor_4 = math::constrain(motor_4, 0.0f, motor_speed_max);
+
+	// 四个电机叠加同向小倾转时，理想对称下水平合力互相抵消，但会产生同向 yaw 力矩：
+	// tau_z ~= -K_F * distance * sum(omega_i^2) * alpha_yaw。
+	const float motor_sq_sum = math::max(motor_1 * motor_1 + motor_2 * motor_2 + motor_3 * motor_3 + motor_4 * motor_4, 1.0f);
+	const float tau_z_sp = I_zz * ang_acc_sp(2);
+	const float alpha_yaw = math::constrain(-tau_z_sp / (kf_safe * distance_safe * motor_sq_sum),
+						-yaw_tilt_max_rad, yaw_tilt_max_rad);
+
+	// yaw 公共倾转叠加在原有 roll/pitch/平移倾转上，最后统一限幅，避免超过机构行程。
+	alpha_offset1 = math::constrain(alpha_base1 + alpha_yaw, -tilt_angle_max_rad, tilt_angle_max_rad);
+	alpha_offset2 = math::constrain(alpha_base2 + alpha_yaw, -tilt_angle_max_rad, tilt_angle_max_rad);
+	alpha_offset3 = math::constrain(alpha_base3 + alpha_yaw, -tilt_angle_max_rad, tilt_angle_max_rad);
+	alpha_offset4 = math::constrain(alpha_base4 + alpha_yaw, -tilt_angle_max_rad, tilt_angle_max_rad);
 
 	// actuator_motors 字段支持 [-1, 1]，普通非可逆电机应发布 [0, 1] 归一化正推力；
 	// 内部 motor_* 仍按角速度计算，再按 T ~ omega^2 映射到悬停油门附近。
