@@ -381,7 +381,7 @@ parameters:
 
       FV_ANG_VEL_P_Z:
         type: float
-        default: 0.2
+        default: 0.25
         decimal: 3
         min: 0.0
         max: 0.6
@@ -417,7 +417,7 @@ parameters:
 
       FV_ANG_VEL_I_Z:
         type: float
-        default: 0.1
+        default: 0.15
         decimal: 3
         min: 0.0
         max: 1.0
@@ -566,7 +566,7 @@ parameters:
 
       FV_YAW_MIX_WT:
         type: float
-        default: 0.35
+        default: 0.6
         decimal: 3
         min: 0.0
         max: 1.0

@@ -717,7 +717,7 @@ void FullvectorControl::Run()
 
 		// 第一版自稳 fullvector 采用保守限幅：最大姿态约 30 度，偏航为速率输入。
 		constexpr float max_manual_tilt_rad = 0.52f; // about 30 deg
-		constexpr float max_manual_yaw_rate = 1.0f; // rad/s
+		constexpr float max_manual_yaw_rate = 2.0f; // rad/s
 		constexpr float max_manual_xy_accel = 2.0f; // m/s^2
 		// 手动输入可能为 NaN：PX4 的 RC 油门和姿态/偏航通道都是 [-1, 1]。
 		const float roll_stick = PX4_ISFINITE(_manual_control_setpoint.roll) ?
@@ -978,7 +978,7 @@ void FullvectorControl::AttitudeControl(const UAVStates & state, UAVCommand & co
 	Vector3f omega_sp = att_kp.emult(e_att) + att_ki.emult(_att_error_int) + att_kd.emult(de_att);
 
 	if (stabilized_mode) {
-		constexpr float max_stabilized_yaw_rate = 1.0f; // rad/s，与手动 yaw 杆限幅保持一致。
+		constexpr float max_stabilized_yaw_rate = 2.0f; // rad/s，与手动 yaw 杆限幅保持一致。
 		omega_sp(2) = math::constrain(command.angular_velocity(2), -max_stabilized_yaw_rate, max_stabilized_yaw_rate);
 	}
 
@@ -1002,7 +1002,7 @@ void FullvectorControl::AttitudeControl(const UAVStates & state, UAVCommand & co
 
 	if (stabilized_mode) {
 		constexpr float yaw_rate_hold_deadband = 0.01f; // rad/s，松杆时清掉 yaw 积分残留。
-		constexpr float max_stabilized_yaw_accel = 2.0f; // rad/s^2，限制电机差动突变。
+		constexpr float max_stabilized_yaw_accel = 4.0f; // rad/s^2，限制电机差动突变。
 
 		if (fabsf(omega_sp(2)) < yaw_rate_hold_deadband) {
 			_ang_vel_error_int(2) = 0.0f;
@@ -1095,11 +1095,11 @@ void FullvectorControl::calculateMotorCommand(const UAVCommand & command)
 	motor_3 = math::constrain(motor_3, 0.0f, motor_speed_max);
 	motor_4 = math::constrain(motor_4, 0.0f, motor_speed_max);
 
-	// 四个电机叠加同向小倾转时，理想对称下水平合力互相抵消，但会产生同向 yaw 力矩：
-	// tau_z ~= -K_F * distance * sum(omega_i^2) * alpha_yaw。
+	// 四个电机叠加同向小倾转时，理想对称下水平合力互相抵消，但会产生 yaw 力矩。
+	// 实机公共倾转方向与原推导相反，这里按实机方向让 alpha_yaw 跟随 tau_z_sp。
 	const float motor_sq_sum = math::max(motor_1 * motor_1 + motor_2 * motor_2 + motor_3 * motor_3 + motor_4 * motor_4, 1.0f);
 	const float tau_z_sp = I_zz * ang_acc_sp(2);
-	const float alpha_yaw = math::constrain(-tau_z_sp / (kf_safe * distance_safe * motor_sq_sum),
+	const float alpha_yaw = math::constrain(tau_z_sp / (kf_safe * distance_safe * motor_sq_sum),
 						-yaw_tilt_max_rad, yaw_tilt_max_rad);
 
 	// yaw 公共倾转叠加在原有 roll/pitch/平移倾转上，最后统一限幅，避免超过机构行程。
