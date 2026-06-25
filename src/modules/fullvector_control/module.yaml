@@ -538,6 +538,44 @@ parameters:
             内部计算得到悬停角速度时对应的 actuator_motors 归一化输出。
             用于把物理角速度命令映射到 PX4 执行器输出范围。
 
+      FV_TILT_MAX:
+        type: float
+        default: 0.35
+        unit: rad
+        decimal: 3
+        min: 0.01
+        max: 1.57
+        description:
+          short: 最大电机倾转角
+          long: |
+            四个倾转电机的最大机械倾转角。
+            用于限制 roll/pitch/平移和 yaw 公共倾转叠加后的总倾转角，并作为 actuator_servos 归一化比例。
+
+      FV_YAW_TILT_MAX:
+        type: float
+        default: 0.175
+        unit: rad
+        decimal: 3
+        min: 0.0
+        max: 1.57
+        description:
+          short: yaw 公共倾转限幅
+          long: |
+            yaw 力矩通过四个电机同向公共倾转补偿时允许的最大倾转角。
+            实际使用时会被限制不超过 FV_TILT_MAX。
+
+      FV_YAW_MIX_WT:
+        type: float
+        default: 0.35
+        decimal: 3
+        min: 0.0
+        max: 1.0
+        description:
+          short: yaw 电机差动权重
+          long: |
+            yaw 角加速度通过电机差动混合的权重。
+            0 表示不使用电机差动 yaw 分量，1 表示按当前模型完全使用该分量。
+
       FV_INERTIA_XX:
         type: float
         default: 0.05892

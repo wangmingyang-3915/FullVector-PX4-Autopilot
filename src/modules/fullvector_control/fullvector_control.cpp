@@ -685,20 +685,17 @@ void FullvectorControl::Run()
 	if (trajectory_valid) {
 		// POSCTL: FlightModeManager 会把遥控器输入转换成 trajectory_setpoint，但姿态在本模块固定为零姿态。
 		// OFFBOARD: trajectory_setpoint 通常来自外部控制端。
-		// 上层可能只填充部分轴的 setpoint，本控制器只采用有限值字段。
-		// 对有限值才覆盖当前命令，NaN 表示该轴不由上层轨迹直接约束。
+		// 上层可能只填充部分轴的 setpoint：位置 NaN 保持上一目标，速度/加速度 NaN 则清零前馈。
 		for (int i = 0; i < 3; i++) {
 			if (PX4_ISFINITE(_trajectory_setpoint.position[i])) {
 				_current_command.position(i) = _trajectory_setpoint.position[i];
 			}
 
-			if (PX4_ISFINITE(_trajectory_setpoint.velocity[i])) {
-				_current_command.velocity(i) = _trajectory_setpoint.velocity[i];
-			}
+			_current_command.velocity(i) = PX4_ISFINITE(_trajectory_setpoint.velocity[i]) ?
+						      _trajectory_setpoint.velocity[i] : 0.0f;
 
-			if (PX4_ISFINITE(_trajectory_setpoint.acceleration[i])) {
-				_current_command.acceleration(i) = _trajectory_setpoint.acceleration[i];
-			}
+			_current_command.acceleration(i) = PX4_ISFINITE(_trajectory_setpoint.acceleration[i]) ?
+							  _trajectory_setpoint.acceleration[i] : 0.0f;
 		}
 
 		if (!posctl_mode && PX4_ISFINITE(_trajectory_setpoint.yaw)) {
@@ -888,9 +885,9 @@ void FullvectorControl::PositionControl(const UAVStates & state, const UAVComman
 	const Vector3f pos_ki{gain_pos_pid(0, 1), gain_pos_pid(1, 1), gain_pos_pid(2, 1)};
 	const Vector3f pos_kd{gain_pos_pid(0, 2), gain_pos_pid(1, 2), gain_pos_pid(2, 2)};
 
-	Vector3f v_sp = pos_kp.emult(ep) + pos_ki.emult(_pos_error_int) + pos_kd.emult(dep);
+	Vector3f v_sp = command.velocity + pos_kp.emult(ep) + pos_ki.emult(_pos_error_int) + pos_kd.emult(dep);
 
-	// 限制期望速度，避免内环指令过大。
+	// 上层速度作为前馈叠加，之后统一限幅，避免内环指令过大。
 	for (int i = 0; i < 3; i++) {
 		v_sp(i) = math::constrain(v_sp(i), -5.0f, 5.0f);
 	}
@@ -908,7 +905,7 @@ void FullvectorControl::PositionControl(const UAVStates & state, const UAVComman
 	const Vector3f vel_ki{gain_vel_pid(0, 1), gain_vel_pid(1, 1), gain_vel_pid(2, 1)};
 	const Vector3f vel_kd{gain_vel_pid(0, 2), gain_vel_pid(1, 2), gain_vel_pid(2, 2)};
 
-	const Vector3f acc_cmd = vel_kp.emult(ev) + vel_ki.emult(_vel_error_int) + vel_kd.emult(dev);
+	const Vector3f acc_cmd = command.acceleration + vel_kp.emult(ev) + vel_ki.emult(_vel_error_int) + vel_kd.emult(dev);
 	// 保存给后续电机倾转角和电机转速计算使用。
 	_pos_acc_cmd = acc_cmd;
 
@@ -1047,9 +1044,9 @@ void FullvectorControl::calculateMotorCommand(const UAVCommand & command)
 	// 使用前级位置环输出和姿态环输出。
 	const Vector3f &acc_sp = _pos_acc_cmd;
 	const Vector3f &ang_acc_sp = _att_ang_acc_cmd;
-	constexpr float tilt_angle_max_rad = 0.35f;
-	constexpr float yaw_tilt_max_rad = 0.175f;
-	constexpr float yaw_motor_mix_weight = 0.35f;
+	const float tilt_angle_max_rad = math::max(_param_fv_tilt_max.get(), 0.01f);
+	const float yaw_tilt_max_rad = math::constrain(_param_fv_yaw_tilt_max.get(), 0.0f, tilt_angle_max_rad);
+	const float yaw_motor_mix_weight = math::constrain(_param_fv_yaw_mix_wt.get(), 0.0f, 1.0f);
 
 	// 根据悬停推力估算基础电机角速度，K_F 太小时做保护。
 	const float kf_safe = math::max(K_F, 1e-6f);
