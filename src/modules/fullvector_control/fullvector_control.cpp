@@ -779,7 +779,8 @@ void FullvectorControl::Run()
 		}
 
 		attitude_sp_target(2) = _manual_yaw_sp;
-		_current_command.angular_velocity(2) = 0.0f;
+		// yaw 杆同时作为角速度前馈，避免只靠航向误差闭环导致打杆响应过软。
+		_current_command.angular_velocity(2) = yaw_rate_cmd;
 
 		// 自稳模式跳过位置闭环，但仍生成等效位置环加速度输出：
 		// pitch/roll 摇杆给水平 NED 加速度，油门给垂向 NED 加速度。
@@ -967,6 +968,7 @@ void FullvectorControl::AttitudeControl(const UAVStates & state, UAVCommand & co
 	// 将当前四元数姿态转为欧拉角，与目标欧拉角做误差。
 	const Vector3f euler_cur = Vector3f(Eulerf(state.attitude));
 	const Vector3f euler_sp(command.Euler_angles(0), command.Euler_angles(1), command.Euler_angles(2));
+	const Vector3f angular_velocity_ff = command.angular_velocity;
 
 	// 姿态角误差需要 wrap 到 [-pi, pi]，避免跨越 pi 时出现大跳变。
 	Vector3f e_att = euler_sp - euler_cur;
@@ -1007,6 +1009,7 @@ void FullvectorControl::AttitudeControl(const UAVStates & state, UAVCommand & co
 
 	if (stabilized_mode) {
 		constexpr float max_stabilized_yaw_rate = 2.0f; // rad/s，与手动 yaw 目标积分限幅保持一致。
+		omega_sp(2) += angular_velocity_ff(2);
 		omega_sp(2) = math::constrain(omega_sp(2), -max_stabilized_yaw_rate, max_stabilized_yaw_rate);
 	}
 
