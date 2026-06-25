@@ -102,6 +102,8 @@ void FullvectorControl::resetAttitudePidState()
 	_att_error_int.zero();
 	_ang_vel_error_int.zero();
 	_att_pid_state_initialized = false;
+	// 自稳 yaw 目标依赖进入 STAB 时的当前航向，PID 重置时一并丢弃旧目标。
+	_manual_yaw_sp_initialized = false;
 }
 
 void FullvectorControl::resetPidState()
@@ -519,6 +521,11 @@ void FullvectorControl::Run()
 	// 本周期是否真正接管执行器输出。
 	const bool fullvector_active = module_active && fullvector_mode_allowed && !native_requested;
 
+	if (!stabilized_mode) {
+		// 离开自稳后不保留手动 yaw 目标，避免下次进入 STAB 时带入旧航向。
+		_manual_yaw_sp_initialized = false;
+	}
+
 	if (!module_active) {
 		// 模块未启用、未解锁或终止模式时，不发布控制输出。
 		// 控制器失活时清空 PID 状态，下一次激活从干净状态开始。
@@ -679,6 +686,7 @@ void FullvectorControl::Run()
 	const bool trajectory_valid = !stabilized_mode
 				      && (_trajectory_setpoint.timestamp != 0)
 				      && (hrt_elapsed_time(&_trajectory_setpoint.timestamp) < 500_ms);
+
 	// 定点模式要求三个欧拉角始终为 0，因此 yaw 目标也固定为 0 rad。
 	float yaw_sp_target = posctl_mode ? 0.0f : _current_command.Euler_angles(2);
 
@@ -715,10 +723,11 @@ void FullvectorControl::Run()
 	if (stabilized_mode) {
 		_manual_control_setpoint_sub.update(&_manual_control_setpoint);
 
-		// 第一版自稳 fullvector 采用保守限幅：最大姿态约 30 度，偏航为速率输入。
+		// 第一版自稳 fullvector 采用保守限幅：最大姿态约 30 度，偏航摇杆积分成航向目标。
 		constexpr float max_manual_tilt_rad = 0.52f; // about 30 deg
 		constexpr float max_manual_yaw_rate = 2.0f; // rad/s
 		constexpr float max_manual_xy_accel = 2.0f; // m/s^2
+
 		// 手动输入可能为 NaN：PX4 的 RC 油门和姿态/偏航通道都是 [-1, 1]。
 		const float roll_stick = PX4_ISFINITE(_manual_control_setpoint.roll) ?
 					 math::constrain(_manual_control_setpoint.roll, -1.0f, 1.0f) : 0.0f;
@@ -745,11 +754,32 @@ void FullvectorControl::Run()
 		// roll 右杆为正；pitch 前推为正，但 PX4/NED 中机头下压对应负 pitch，因此取负号。
 		attitude_sp_target(0) = roll_stick * max_manual_tilt_rad;
 		attitude_sp_target(1) = -pitch_stick * max_manual_tilt_rad;
-		// 自稳模式下 yaw 杆直接作为期望偏航角速度，不再积分成航向目标，避免长时间打杆后 yaw 误差累积。
+		// 自稳模式下 yaw 杆积分成航向目标；不叠加 yaw-rate 前馈，避免和姿态闭环重复施力。
 		constexpr float manual_yaw_deadband = 0.03f;
-		attitude_sp_target(2) = Vector3f(Eulerf(_current_state.attitude))(2);
-		_current_command.angular_velocity(2) = (fabsf(yaw_stick) > manual_yaw_deadband) ?
-						       yaw_stick * max_manual_yaw_rate : 0.0f;
+		constexpr float max_manual_yaw_error = 0.6f; // rad，限制目标航向追不上的积分堆积。
+		const float current_yaw = Vector3f(Eulerf(_current_state.attitude))(2);
+		const float yaw_rate_cmd = (fabsf(yaw_stick) > manual_yaw_deadband) ?
+					   yaw_stick * max_manual_yaw_rate : 0.0f;
+
+		if (!_manual_yaw_sp_initialized) {
+			_manual_yaw_sp = current_yaw;
+			_manual_yaw_sp_initialized = true;
+		}
+
+		_manual_yaw_sp = matrix::wrap_pi(_manual_yaw_sp + yaw_rate_cmd * _dt);
+
+		const float yaw_error_from_current = matrix::wrap_pi(_manual_yaw_sp - current_yaw);
+
+		if (fabsf(yaw_error_from_current) > max_manual_yaw_error) {
+			// 飞机实际航向跟不上目标时，只保留有限 yaw 误差，防止后续一次性打出大差动。
+			_manual_yaw_sp = matrix::wrap_pi(current_yaw
+							 + math::constrain(yaw_error_from_current,
+									   -max_manual_yaw_error,
+									   max_manual_yaw_error));
+		}
+
+		attitude_sp_target(2) = _manual_yaw_sp;
+		_current_command.angular_velocity(2) = 0.0f;
 
 		// 自稳模式跳过位置闭环，但仍生成等效位置环加速度输出：
 		// pitch/roll 摇杆给水平 NED 加速度，油门给垂向 NED 加速度。
@@ -759,10 +789,9 @@ void FullvectorControl::Run()
 		_pos_acc_cmd.zero();
 		const float forward_accel = pitch_stick * max_manual_xy_accel;
 		const float right_accel = roll_stick * max_manual_xy_accel;
-		const float yaw = Vector3f(Eulerf(_current_state.attitude))(2);
 		// 将机头前向/右向的手动加速度指令按当前航向旋转到 NED x/y。
-		_pos_acc_cmd(0) = cosf(yaw) * forward_accel - sinf(yaw) * right_accel;
-		_pos_acc_cmd(1) = sinf(yaw) * forward_accel + cosf(yaw) * right_accel;
+		_pos_acc_cmd(0) = cosf(current_yaw) * forward_accel - sinf(current_yaw) * right_accel;
+		_pos_acc_cmd(1) = sinf(current_yaw) * forward_accel + cosf(current_yaw) * right_accel;
 		// NED z 轴向下为正。手动自稳模式下让油门杆直接决定集体归一化推力：
 		// calculateMotorCommand() 中 norm = hover * (g - acc_z) / g，因此这里反算 acc_z。
 		_pos_acc_cmd(2) = gravity * (1.0f - throttle / hover_throttle);
@@ -945,11 +974,6 @@ void FullvectorControl::AttitudeControl(const UAVStates & state, UAVCommand & co
 	e_att(1) = matrix::wrap_pi(e_att(1));
 	e_att(2) = matrix::wrap_pi(e_att(2));
 
-	if (stabilized_mode) {
-		// 自稳 yaw 由遥控杆直接给角速度，姿态外环不再累积航向误差。
-		e_att(2) = 0.0f;
-	}
-
 	if (!_att_pid_state_initialized) {
 		// 首次运行初始化微分历史项。
 		_att_error_prev = e_att;
@@ -961,11 +985,15 @@ void FullvectorControl::AttitudeControl(const UAVStates & state, UAVCommand & co
 	Vector3f de_att = (e_att - _att_error_prev) / dt;
 
 	if (stabilized_mode) {
-		de_att(2) = 0.0f;
+		// 自稳 yaw 使用航向角闭环，但不让姿态环 yaw 积分长期堆积。
 		_att_error_int(2) = 0.0f;
 	}
 
 	_att_error_int += e_att * dt;
+
+	if (stabilized_mode) {
+		_att_error_int(2) = 0.0f;
+	}
 
 	for (int i = 0; i < 3; i++) {
 		_att_error_int(i) = math::constrain(_att_error_int(i), -1.0f, 1.0f);
@@ -978,8 +1006,8 @@ void FullvectorControl::AttitudeControl(const UAVStates & state, UAVCommand & co
 	Vector3f omega_sp = att_kp.emult(e_att) + att_ki.emult(_att_error_int) + att_kd.emult(de_att);
 
 	if (stabilized_mode) {
-		constexpr float max_stabilized_yaw_rate = 2.0f; // rad/s，与手动 yaw 杆限幅保持一致。
-		omega_sp(2) = math::constrain(command.angular_velocity(2), -max_stabilized_yaw_rate, max_stabilized_yaw_rate);
+		constexpr float max_stabilized_yaw_rate = 2.0f; // rad/s，与手动 yaw 目标积分限幅保持一致。
+		omega_sp(2) = math::constrain(omega_sp(2), -max_stabilized_yaw_rate, max_stabilized_yaw_rate);
 	}
 
 	// 将姿态外环生成的期望角速度写回 command，供调试或后续扩展使用。
@@ -994,6 +1022,18 @@ void FullvectorControl::AttitudeControl(const UAVStates & state, UAVCommand & co
 		_ang_vel_error_int(i) = math::constrain(_ang_vel_error_int(i), -3.0f, 3.0f);
 	}
 
+	constexpr float yaw_heading_hold_deadband = 0.03f; // rad，航向误差很小时清掉 yaw 积分残留。
+	constexpr float yaw_rate_hold_deadband = 0.03f; // rad/s，角速度接近目标时清掉 yaw 积分残留。
+	constexpr float yaw_rate_integral_limit = 0.3f;
+	constexpr float max_stabilized_yaw_accel = 4.0f; // rad/s^2，限制电机差动突变。
+
+	if (stabilized_mode) {
+		// yaw 角速度积分只允许很小的修正量，避免电机差动被积分项突然拉大。
+		_ang_vel_error_int(2) = math::constrain(_ang_vel_error_int(2),
+							-yaw_rate_integral_limit,
+							yaw_rate_integral_limit);
+	}
+
 	const Vector3f w_kp{gain_ang_vel_pid(0, 0), gain_ang_vel_pid(1, 0), gain_ang_vel_pid(2, 0)};
 	const Vector3f w_ki{gain_ang_vel_pid(0, 1), gain_ang_vel_pid(1, 1), gain_ang_vel_pid(2, 1)};
 	const Vector3f w_kd{gain_ang_vel_pid(0, 2), gain_ang_vel_pid(1, 2), gain_ang_vel_pid(2, 2)};
@@ -1001,10 +1041,8 @@ void FullvectorControl::AttitudeControl(const UAVStates & state, UAVCommand & co
 	Vector3f ang_acc_cmd = w_kp.emult(e_w) + w_ki.emult(_ang_vel_error_int) + w_kd.emult(de_w);
 
 	if (stabilized_mode) {
-		constexpr float yaw_rate_hold_deadband = 0.01f; // rad/s，松杆时清掉 yaw 积分残留。
-		constexpr float max_stabilized_yaw_accel = 4.0f; // rad/s^2，限制电机差动突变。
-
-		if (fabsf(omega_sp(2)) < yaw_rate_hold_deadband) {
+		if ((fabsf(e_att(2)) < yaw_heading_hold_deadband) && (fabsf(e_w(2)) < yaw_rate_hold_deadband)) {
+			// 已接近目标航向并且 yaw rate 误差很小时，清掉残余积分，保持松杆输出干净。
 			_ang_vel_error_int(2) = 0.0f;
 			ang_acc_cmd(2) = w_kp(2) * e_w(2) + w_kd(2) * de_w(2);
 		}

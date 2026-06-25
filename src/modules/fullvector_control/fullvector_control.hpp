@@ -285,6 +285,9 @@ private:
 
 	bool _controller_was_active{false};
 	bool _command_initialized{false};
+	// 自稳模式下由 yaw 摇杆积分出的航向目标，进入 STAB 时用当前航向初始化。
+	float _manual_yaw_sp{0.0f};
+	bool _manual_yaw_sp_initialized{false};
 	actuator_motors_s _last_motor_output{};
 	actuator_servos_s _last_tilt_output{};
 	bool _last_actuator_output_valid{false};
