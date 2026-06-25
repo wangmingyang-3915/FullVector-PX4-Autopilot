@@ -754,19 +754,28 @@ void FullvectorControl::Run()
 		// roll 右杆为正；pitch 前推为正，但 PX4/NED 中机头下压对应负 pitch，因此取负号。
 		attitude_sp_target(0) = roll_stick * max_manual_tilt_rad;
 		attitude_sp_target(1) = -pitch_stick * max_manual_tilt_rad;
-		// 自稳模式下 yaw 杆积分成航向目标；不叠加 yaw-rate 前馈，避免和姿态闭环重复施力。
+		// 自稳模式下 yaw 杆积分成航向目标；松杆时捕获当前航向，让 yaw 公共倾转尽快释放。
 		constexpr float manual_yaw_deadband = 0.03f;
 		constexpr float max_manual_yaw_error = 0.6f; // rad，限制目标航向追不上的积分堆积。
 		const float current_yaw = Vector3f(Eulerf(_current_state.attitude))(2);
-		const float yaw_rate_cmd = (fabsf(yaw_stick) > manual_yaw_deadband) ?
-					   yaw_stick * max_manual_yaw_rate : 0.0f;
+		const bool yaw_stick_active = fabsf(yaw_stick) > manual_yaw_deadband;
+		const float yaw_rate_cmd = yaw_stick_active ? yaw_stick * max_manual_yaw_rate : 0.0f;
 
 		if (!_manual_yaw_sp_initialized) {
 			_manual_yaw_sp = current_yaw;
 			_manual_yaw_sp_initialized = true;
 		}
 
-		_manual_yaw_sp = matrix::wrap_pi(_manual_yaw_sp + yaw_rate_cmd * _dt);
+		if (yaw_stick_active) {
+			_manual_yaw_sp = matrix::wrap_pi(_manual_yaw_sp + yaw_rate_cmd * _dt);
+		} else {
+			// 松开 yaw 杆后不继续追旧航向目标，避免地面/低响应状态下舵机长期保持 yaw 倾转。
+			_manual_yaw_sp = current_yaw;
+			_att_error_int(2) = 0.0f;
+			_att_error_prev(2) = 0.0f;
+			_ang_vel_error_int(2) = 0.0f;
+			_ang_vel_error_prev(2) = -_current_state.angular_velocity(2);
+		}
 
 		const float yaw_error_from_current = matrix::wrap_pi(_manual_yaw_sp - current_yaw);
 
