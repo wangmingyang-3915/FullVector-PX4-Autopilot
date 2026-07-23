@@ -228,11 +228,17 @@ bool FullvectorControl::evaluateNativeControllerRequest(float &rc_switch_value, 
 	// 按配置读取指定 AUX 通道值。
 	switch (channel) {
 	case 1: value = _manual_control_setpoint.aux1; break;
+
 	case 2: value = _manual_control_setpoint.aux2; break;
+
 	case 3: value = _manual_control_setpoint.aux3; break;
+
 	case 4: value = _manual_control_setpoint.aux4; break;
+
 	case 5: value = _manual_control_setpoint.aux5; break;
+
 	case 6: value = _manual_control_setpoint.aux6; break;
+
 	default: break;
 	}
 
@@ -381,8 +387,8 @@ bool FullvectorControl::updateUAVState()
 	if (_vehicle_angular_velocity_sub.updated()) {
 		_vehicle_angular_velocity_sub.copy(&_angular_velocity);
 		_current_state.angular_velocity = Vector3f(_angular_velocity.xyz[0],
-								   _angular_velocity.xyz[1],
-								   _angular_velocity.xyz[2]);
+						  _angular_velocity.xyz[1],
+						  _angular_velocity.xyz[2]);
 		_last_angular_velocity_update = _angular_velocity.timestamp;
 	}
 
@@ -404,7 +410,7 @@ bool FullvectorControl::updateUAVState()
 	const hrt_abstime elapsed_position = position_available ? hrt_elapsed_time(&_last_position_update) :
 					     (stale_fail_timeout + 1);
 	const hrt_abstime elapsed_velocity = position_available ? hrt_elapsed_time(&_last_velocity_update) :
-					    (stale_fail_timeout + 1);
+					     (stale_fail_timeout + 1);
 	const bool position_aging = (elapsed_position > stale_warn_timeout) || (elapsed_velocity > stale_warn_timeout);
 	const bool position_stale = (elapsed_position > stale_hold_timeout) || (elapsed_velocity > stale_hold_timeout);
 	const bool position_fail = (elapsed_position > stale_fail_timeout) || (elapsed_velocity > stale_fail_timeout);
@@ -452,8 +458,8 @@ bool FullvectorControl::updateAttitudeStateOnly()
 	if (_vehicle_angular_velocity_sub.updated()) {
 		_vehicle_angular_velocity_sub.copy(&_angular_velocity);
 		_current_state.angular_velocity = Vector3f(_angular_velocity.xyz[0],
-								   _angular_velocity.xyz[1],
-								   _angular_velocity.xyz[2]);
+						  _angular_velocity.xyz[1],
+						  _angular_velocity.xyz[2]);
 		_last_angular_velocity_update = _angular_velocity.timestamp;
 	}
 
@@ -522,9 +528,9 @@ void FullvectorControl::Run()
 					       && PX4_ISFINITE(_target_relative_pose.q[2])
 					       && PX4_ISFINITE(_target_relative_pose.q[3]);
 		const float quaternion_norm_sq = _target_relative_pose.q[0] * _target_relative_pose.q[0]
-					       + _target_relative_pose.q[1] * _target_relative_pose.q[1]
-					       + _target_relative_pose.q[2] * _target_relative_pose.q[2]
-					       + _target_relative_pose.q[3] * _target_relative_pose.q[3];
+						 + _target_relative_pose.q[1] * _target_relative_pose.q[1]
+						 + _target_relative_pose.q[2] * _target_relative_pose.q[2]
+						 + _target_relative_pose.q[3] * _target_relative_pose.q[3];
 		const bool quaternion_normalized = quaternion_finite && (fabsf(quaternion_norm_sq - 1.0f) < 0.05f);
 
 		_target_relative_pose_valid = _target_relative_pose.position_valid
@@ -626,7 +632,7 @@ void FullvectorControl::Run()
 
 	const bool debug_print_enabled = (_param_print_msg_a_en.get() != 0);
 	const bool allow_debug_print = debug_print_enabled
-					      && ((_last_debug_print_time == 0) || (hrt_elapsed_time(&_last_debug_print_time) > 200_ms));
+				       && ((_last_debug_print_time == 0) || (hrt_elapsed_time(&_last_debug_print_time) > 200_ms));
 
 	if (!_controller_was_active) {
 		// 从未激活到激活的上升沿，重置时间和积分项。
@@ -755,10 +761,10 @@ void FullvectorControl::Run()
 			}
 
 			_current_command.velocity(i) = PX4_ISFINITE(_trajectory_setpoint.velocity[i]) ?
-						      _trajectory_setpoint.velocity[i] : 0.0f;
+						       _trajectory_setpoint.velocity[i] : 0.0f;
 
 			_current_command.acceleration(i) = PX4_ISFINITE(_trajectory_setpoint.acceleration[i]) ?
-							  _trajectory_setpoint.acceleration[i] : 0.0f;
+							   _trajectory_setpoint.acceleration[i] : 0.0f;
 		}
 
 		if (posctl_mode) {
@@ -838,6 +844,7 @@ void FullvectorControl::Run()
 
 		if (yaw_stick_active) {
 			_manual_yaw_sp = matrix::wrap_pi(_manual_yaw_sp + yaw_rate_cmd * _dt);
+
 		} else {
 			// 松开 yaw 杆后不继续追旧航向目标，避免地面/低响应状态下舵机长期保持 yaw 倾转。
 			_manual_yaw_sp = current_yaw;
@@ -853,8 +860,8 @@ void FullvectorControl::Run()
 			// 飞机实际航向跟不上目标时，只保留有限 yaw 误差，防止后续一次性打出大差动。
 			_manual_yaw_sp = matrix::wrap_pi(current_yaw
 							 + math::constrain(yaw_error_from_current,
-									   -max_manual_yaw_error,
-									   max_manual_yaw_error));
+									 -max_manual_yaw_error,
+									 max_manual_yaw_error));
 		}
 
 		attitude_sp_target(2) = _manual_yaw_sp;
@@ -894,7 +901,7 @@ void FullvectorControl::Run()
 
 		const float error = matrix::wrap_pi(attitude_sp_target(i) - _current_command.Euler_angles(i));
 		_current_command.Euler_angles(i) = matrix::wrap_pi(_current_command.Euler_angles(i)
-						+ math::constrain(error, -attitude_sp_step, attitude_sp_step));
+						   + math::constrain(error, -attitude_sp_step, attitude_sp_step));
 	}
 
 	perf_begin(_loop_perf);
@@ -914,18 +921,18 @@ void FullvectorControl::Run()
 	if (allow_debug_print && (thrust_updated || motors_updated)) {
 		if (thrust_updated) {
 			PX4_INFO("[ThrustSub] thrust_sp=[%.3f, %.3f, %.3f] upward=%.3f",
-			       (double)thrust_feedback.xyz[0],
-			       (double)thrust_feedback.xyz[1],
-			       (double)thrust_feedback.xyz[2],
-			       (double)(-thrust_feedback.xyz[2]));
+				 (double)thrust_feedback.xyz[0],
+				 (double)thrust_feedback.xyz[1],
+				 (double)thrust_feedback.xyz[2],
+				 (double)(-thrust_feedback.xyz[2]));
 		}
 
 		if (motors_updated) {
 			PX4_INFO("[MotorOut] m1=%.3f m2=%.3f m3=%.3f m4=%.3f",
-			       (double)actuator_motors.control[0],
-			       (double)actuator_motors.control[1],
-			       (double)actuator_motors.control[2],
-			       (double)actuator_motors.control[3]);
+				 (double)actuator_motors.control[0],
+				 (double)actuator_motors.control[1],
+				 (double)actuator_motors.control[2],
+				 (double)actuator_motors.control[3]);
 		}
 	}
 
@@ -969,7 +976,7 @@ void FullvectorControl::Run()
 	perf_end(_loop_perf);
 }
 
-void FullvectorControl::PositionControl(const UAVStates & state, const UAVCommand & command, const float dt)
+void FullvectorControl::PositionControl(const UAVStates &state, const UAVCommand &command, const float dt)
 {
 	// dt 无效时不更新 PID，避免除零或 NaN 传播。
 	if (!PX4_ISFINITE(dt) || dt <= FLT_EPSILON) {
@@ -979,7 +986,7 @@ void FullvectorControl::PositionControl(const UAVStates & state, const UAVComman
 	const bool use_relative_pose = (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_OFFBOARD)
 				       && _target_relative_pose_valid;
 	Vector3f ep{};
-	bool position_axis_locked[3]{};
+	bool position_axis_locked[3] {};
 
 	if (use_relative_pose) {
 		// 机载电脑给出本机在目标机 body FRD 中的位置，先计算相对位置误差。
@@ -1102,14 +1109,16 @@ void FullvectorControl::PositionControl(const UAVStates & state, const UAVComman
 	position_controller_output.acceleration[2] = acc_cmd(2);
 	_position_controller_output_pub.publish(position_controller_output);
 
-	if ((_param_print_msg_a_en.get() != 0) && ((_last_debug_print_time == 0) || (hrt_elapsed_time(&_last_debug_print_time) > 200_ms))) {
+	if ((_param_print_msg_a_en.get() != 0) && ((_last_debug_print_time == 0)
+			|| (hrt_elapsed_time(&_last_debug_print_time) > 200_ms))) {
 		PX4_INFO("[PosCtrl] ep=[%.2f %.2f %.2f] acc_sp=[%.2f %.2f %.2f]",
 			 (double)ep(0), (double)ep(1), (double)ep(2),
 			 (double)acc_cmd(0), (double)acc_cmd(1), (double)acc_cmd(2));
 	}
 }
 
-void FullvectorControl::AttitudeControl(const UAVStates & state, UAVCommand & command, const float dt, bool stabilized_mode)
+void FullvectorControl::AttitudeControl(const UAVStates &state, UAVCommand &command, const float dt,
+					bool stabilized_mode)
 {
 	// dt 无效时不更新 PID。
 	if (!PX4_ISFINITE(dt) || dt <= FLT_EPSILON) {
@@ -1135,6 +1144,9 @@ void FullvectorControl::AttitudeControl(const UAVStates & state, UAVCommand & co
 	}
 
 	const Vector3f angular_velocity_ff = command.angular_velocity;
+	const bool posctl_mode = _vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_POSCTL;
+	const bool posctl_yaw_rate_active = posctl_mode && (fabsf(angular_velocity_ff(2)) > FLT_EPSILON);
+	const bool manual_yaw_control = stabilized_mode || posctl_mode;
 
 	// 姿态角误差需要 wrap 到 [-pi, pi]，避免跨越 pi 时出现大跳变。
 	Vector3f e_att = euler_sp - euler_cur;
@@ -1159,14 +1171,19 @@ void FullvectorControl::AttitudeControl(const UAVStates & state, UAVCommand & co
 	// 姿态外环 PID：根据姿态误差生成期望角速度。
 	Vector3f de_att = (e_att - _att_error_prev) / dt;
 
-	if (stabilized_mode) {
-		// 自稳 yaw 使用航向角闭环，但不让姿态环 yaw 积分长期堆积。
+	if (posctl_yaw_rate_active) {
+		// 从航向保持切入角速度控制时抑制 yaw 角度微分脉冲，由角速度前馈直接给出转向目标。
+		de_att(2) = 0.0f;
+	}
+
+	if (stabilized_mode || posctl_yaw_rate_active) {
+		// 自稳 yaw 以及定点模式打杆期间不让姿态环 yaw 积分与角速度前馈对抗。
 		_att_error_int(2) = 0.0f;
 	}
 
 	_att_error_int += e_att * dt;
 
-	if (stabilized_mode) {
+	if (stabilized_mode || posctl_yaw_rate_active) {
 		_att_error_int(2) = 0.0f;
 	}
 
@@ -1180,10 +1197,7 @@ void FullvectorControl::AttitudeControl(const UAVStates & state, UAVCommand & co
 
 	Vector3f omega_sp = att_kp.emult(e_att) + att_ki.emult(_att_error_int) + att_kd.emult(de_att);
 
-	const bool manual_yaw_rate_control = stabilized_mode
-					     || (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_POSCTL);
-
-	if (manual_yaw_rate_control) {
+	if (manual_yaw_control) {
 		constexpr float max_manual_yaw_rate = 2.0f; // rad/s，与手动 yaw 目标积分限幅保持一致。
 		omega_sp(2) += angular_velocity_ff(2);
 		omega_sp(2) = math::constrain(omega_sp(2), -max_manual_yaw_rate, max_manual_yaw_rate);
@@ -1204,9 +1218,9 @@ void FullvectorControl::AttitudeControl(const UAVStates & state, UAVCommand & co
 	constexpr float yaw_heading_hold_deadband = 0.03f; // rad，航向误差很小时清掉 yaw 积分残留。
 	constexpr float yaw_rate_hold_deadband = 0.03f; // rad/s，角速度接近目标时清掉 yaw 积分残留。
 	constexpr float yaw_rate_integral_limit = 0.3f;
-	constexpr float max_stabilized_yaw_accel = 4.0f; // rad/s^2，限制电机差动突变。
+	constexpr float max_manual_yaw_accel = 4.0f; // rad/s^2，限制电机差动突变。
 
-	if (stabilized_mode) {
+	if (manual_yaw_control) {
 		// yaw 角速度积分只允许很小的修正量，避免电机差动被积分项突然拉大。
 		_ang_vel_error_int(2) = math::constrain(_ang_vel_error_int(2),
 							-yaw_rate_integral_limit,
@@ -1219,14 +1233,14 @@ void FullvectorControl::AttitudeControl(const UAVStates & state, UAVCommand & co
 
 	Vector3f ang_acc_cmd = w_kp.emult(e_w) + w_ki.emult(_ang_vel_error_int) + w_kd.emult(de_w);
 
-	if (stabilized_mode) {
+	if (manual_yaw_control) {
 		if ((fabsf(e_att(2)) < yaw_heading_hold_deadband) && (fabsf(e_w(2)) < yaw_rate_hold_deadband)) {
 			// 已接近目标航向并且 yaw rate 误差很小时，清掉残余积分，保持松杆输出干净。
 			_ang_vel_error_int(2) = 0.0f;
 			ang_acc_cmd(2) = w_kp(2) * e_w(2) + w_kd(2) * de_w(2);
 		}
 
-		ang_acc_cmd(2) = math::constrain(ang_acc_cmd(2), -max_stabilized_yaw_accel, max_stabilized_yaw_accel);
+		ang_acc_cmd(2) = math::constrain(ang_acc_cmd(2), -max_manual_yaw_accel, max_manual_yaw_accel);
 	}
 
 	// 保存给后续电机转速分配使用。
@@ -1245,14 +1259,15 @@ void FullvectorControl::AttitudeControl(const UAVStates & state, UAVCommand & co
 	attitude_controller_output.xyz[2] = ang_acc_cmd(2);
 	_attitude_controller_output_pub.publish(attitude_controller_output);
 
-	if ((_param_print_msg_a_en.get() != 0) && ((_last_debug_print_time == 0) || (hrt_elapsed_time(&_last_debug_print_time) > 200_ms))) {
+	if ((_param_print_msg_a_en.get() != 0) && ((_last_debug_print_time == 0)
+			|| (hrt_elapsed_time(&_last_debug_print_time) > 200_ms))) {
 		PX4_INFO("[AttCtrl] e_att=[%.2f %.2f %.2f] ang_acc_sp=[%.2f %.2f %.2f]",
 			 (double)e_att(0), (double)e_att(1), (double)e_att(2),
 			 (double)ang_acc_cmd(0), (double)ang_acc_cmd(1), (double)ang_acc_cmd(2));
 	}
 }
 
-void FullvectorControl::calculateMotorCommand(const UAVCommand & command)
+void FullvectorControl::calculateMotorCommand(const UAVCommand &command)
 {
 	// 读取期望姿态角；当前电机倾转角主要使用 roll/pitch，yaw 通过公共倾转补偿参与。
 	const float phi_sp = command.Euler_angles(0);
@@ -1282,10 +1297,14 @@ void FullvectorControl::calculateMotorCommand(const UAVCommand & command)
 	// 根据姿态目标和水平加速度指令计算四个电机的基础倾转角偏置。
 	// 小角度下 controlAllocation() 中有 a_ned_xy = -R_nb * F_body_xy / m，
 	// 因此期望 NED 水平加速度需要生成反向机体系水平力。
-	const float alpha_base1 =  sqrtf(2.0f)*theta_sp + sqrtf(2.0f)*phi_sp - acc_to_tilt * mass_safe * (acc_sp(0) - acc_sp(1)) / 4.0f;
-	const float alpha_base2 = -sqrtf(2.0f)*theta_sp - sqrtf(2.0f)*phi_sp + acc_to_tilt * mass_safe * (acc_sp(0) - acc_sp(1)) / 4.0f;
-	const float alpha_base3 = -sqrtf(2.0f)*theta_sp + sqrtf(2.0f)*phi_sp + acc_to_tilt * mass_safe * (acc_sp(0) + acc_sp(1)) / 4.0f;
-	const float alpha_base4 =  sqrtf(2.0f)*theta_sp - sqrtf(2.0f)*phi_sp - acc_to_tilt * mass_safe * (acc_sp(0) + acc_sp(1)) / 4.0f;
+	const float alpha_base1 =  sqrtf(2.0f) * theta_sp + sqrtf(2.0f) * phi_sp - acc_to_tilt * mass_safe * (acc_sp(
+					   0) - acc_sp(1)) / 4.0f;
+	const float alpha_base2 = -sqrtf(2.0f) * theta_sp - sqrtf(2.0f) * phi_sp + acc_to_tilt * mass_safe * (acc_sp(
+					  0) - acc_sp(1)) / 4.0f;
+	const float alpha_base3 = -sqrtf(2.0f) * theta_sp + sqrtf(2.0f) * phi_sp + acc_to_tilt * mass_safe * (acc_sp(
+					  0) + acc_sp(1)) / 4.0f;
+	const float alpha_base4 =  sqrtf(2.0f) * theta_sp - sqrtf(2.0f) * phi_sp - acc_to_tilt * mass_safe * (acc_sp(
+					   0) + acc_sp(1)) / 4.0f;
 
 
 	const auto signed_sqrt = [](float value) {
@@ -1314,7 +1333,8 @@ void FullvectorControl::calculateMotorCommand(const UAVCommand & command)
 
 	// 四个电机叠加同向小倾转时，理想对称下水平合力互相抵消，但会产生 yaw 力矩。
 	// 实机公共倾转方向与原推导相反，这里按实机方向让 alpha_yaw 跟随 tau_z_sp。
-	const float motor_sq_sum = math::max(motor_1 * motor_1 + motor_2 * motor_2 + motor_3 * motor_3 + motor_4 * motor_4, 1.0f);
+	const float motor_sq_sum = math::max(motor_1 * motor_1 + motor_2 * motor_2 + motor_3 * motor_3 + motor_4 * motor_4,
+					     1.0f);
 	const float tau_z_sp = I_zz * ang_acc_sp(2);
 	const float alpha_yaw = math::constrain(tau_z_sp / (kf_safe * distance_safe * motor_sq_sum),
 						-yaw_tilt_max_rad, yaw_tilt_max_rad);
@@ -1371,7 +1391,7 @@ void FullvectorControl::calculateMotorCommand(const UAVCommand & command)
 	_motor_tilt_pub_raw.publish(motor_tilt);
 }
 
-void FullvectorControl::controlAllocation(const UAVStates & state, const UAVCommand & command)
+void FullvectorControl::controlAllocation(const UAVStates &state, const UAVCommand &command)
 {
 	// 当前姿态用于把机体系推力转换到 NED 世界系，并进行调试用动力学积分。
 	const Vector3f euler_cur = Vector3f(Eulerf(state.attitude));
@@ -1421,17 +1441,17 @@ void FullvectorControl::controlAllocation(const UAVStates & state, const UAVComm
 
 	// 将机体系力转换为世界系加速度，NED 坐标下 z 方向含重力项。
 	const float mass_safe = math::max(mass, 1e-3f);
-	const float dv_x =- ((cosf(pitch_rad) * cosf(yaw_rad)) * Fx
-			  + (cosf(yaw_rad) * sinf(pitch_rad) * sinf(roll_rad) - sinf(yaw_rad) * cosf(roll_rad)) * Fy
-			  + (cosf(yaw_rad) * sinf(pitch_rad) * cosf(roll_rad) + sinf(yaw_rad) * sinf(roll_rad)) * Fz) / mass_safe;
+	const float dv_x = - ((cosf(pitch_rad) * cosf(yaw_rad)) * Fx
+			      + (cosf(yaw_rad) * sinf(pitch_rad) * sinf(roll_rad) - sinf(yaw_rad) * cosf(roll_rad)) * Fy
+			      + (cosf(yaw_rad) * sinf(pitch_rad) * cosf(roll_rad) + sinf(yaw_rad) * sinf(roll_rad)) * Fz) / mass_safe;
 
-	const float dv_y =- ((cosf(pitch_rad) * sinf(yaw_rad)) * Fx
-			  + (sinf(yaw_rad) * sinf(pitch_rad) * sinf(roll_rad) + cosf(yaw_rad) * cosf(roll_rad)) * Fy
-			  + (sinf(yaw_rad) * sinf(pitch_rad) * cosf(roll_rad) - cosf(yaw_rad) * sinf(roll_rad)) * Fz) / mass_safe;
+	const float dv_y = - ((cosf(pitch_rad) * sinf(yaw_rad)) * Fx
+			      + (sinf(yaw_rad) * sinf(pitch_rad) * sinf(roll_rad) + cosf(yaw_rad) * cosf(roll_rad)) * Fy
+			      + (sinf(yaw_rad) * sinf(pitch_rad) * cosf(roll_rad) - cosf(yaw_rad) * sinf(roll_rad)) * Fz) / mass_safe;
 
 	const float dv_z = gravity - ((-sinf(pitch_rad)) * Fx
-			   + (sinf(roll_rad) * cosf(pitch_rad)) * Fy
-			   + (cosf(roll_rad) * cosf(pitch_rad)) * Fz) / mass_safe;
+				      + (sinf(roll_rad) * cosf(pitch_rad)) * Fy
+				      + (cosf(roll_rad) * cosf(pitch_rad)) * Fz) / mass_safe;
 
 	// 简单积分得到预测位置和速度；当前仅用于内部调试计算，暂不发布。
 	const Vector3f acc_world(dv_x, dv_y, dv_z);
@@ -1449,17 +1469,17 @@ void FullvectorControl::controlAllocation(const UAVStates & state, const UAVComm
 
 	const float arm_d = distance / sqrtf(2.0f);
 	const float tau_x = -K_F * m1_sq * arm_d * cosf(alpha_offset1)
-			  + K_F * m2_sq * arm_d * cosf(alpha_offset2)
-			  + K_F * m3_sq * arm_d * cosf(alpha_offset3)
-			  - K_F * m4_sq * arm_d * cosf(alpha_offset4) + Qx;
+			    + K_F * m2_sq * arm_d * cosf(alpha_offset2)
+			    + K_F * m3_sq * arm_d * cosf(alpha_offset3)
+			    - K_F * m4_sq * arm_d * cosf(alpha_offset4) + Qx;
 	const float tau_y =  K_F * m1_sq * arm_d * cosf(alpha_offset1)
-			  - K_F * m2_sq * arm_d * cosf(alpha_offset2)
-			  + K_F * m3_sq * arm_d * cosf(alpha_offset3)
-			  - K_F * m4_sq * arm_d * cosf(alpha_offset4) + Qy;
+			     - K_F * m2_sq * arm_d * cosf(alpha_offset2)
+			     + K_F * m3_sq * arm_d * cosf(alpha_offset3)
+			     - K_F * m4_sq * arm_d * cosf(alpha_offset4) + Qy;
 	const float tau_z = -K_F * m1_sq * distance * sinf(alpha_offset1)
-			  - K_F * m2_sq * distance * sinf(alpha_offset2)
-			  - K_F * m3_sq * distance * sinf(alpha_offset3)
-			  - K_F * m4_sq * distance * sinf(alpha_offset4) + Qz;
+			    - K_F * m2_sq * distance * sinf(alpha_offset2)
+			    - K_F * m3_sq * distance * sinf(alpha_offset3)
+			    - K_F * m4_sq * distance * sinf(alpha_offset4) + Qz;
 
 	// 刚体转动动力学：由力矩、惯量和转子陀螺项估算机体系角加速度。
 	const float p = state.angular_velocity(0);
@@ -1510,6 +1530,7 @@ int FullvectorControl::task_spawn(int argc, char *argv[])
 		if (instance->init()) {
 			return PX4_OK;
 		}
+
 	} else {
 		PX4_ERR("alloc failed");
 	}

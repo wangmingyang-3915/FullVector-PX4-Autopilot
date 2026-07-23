@@ -980,6 +980,7 @@ UxrceddsClient *UxrceddsClient::instantiate(int argc, char *argv[])
 			} else {
 				PX4_WARN("namespace index must be between 0 and 9999 inclusive; ignoring index-based namespace");
 			}
+
 		} else {
 			// Keep distributed real-HIL deployments separated without requiring
 			// a per-vehicle shell command after every reboot.  The two FSM

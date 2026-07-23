@@ -94,7 +94,7 @@ struct UAVStates {
 
 // 控制器内部命令缓存，由 trajectory_setpoint 和当前状态共同生成。
 struct UAVCommand {
-    	Vector3f position;			// 期望 NED 位置，单位 m。
+	Vector3f position;			// 期望 NED 位置，单位 m。
 	Vector3f velocity;                      // 期望 NED 速度，当前主要用于缓存上层轨迹目标。
 	Vector3f acceleration;                  // 期望 NED 加速度，当前主要用于缓存上层轨迹目标。
 	Vector3f Euler_angles;          	// 期望欧拉角（roll, pitch, yaw）。
@@ -124,17 +124,17 @@ public:
 	 * @param state current UAV state
 	 * @param command desired command
 	 */
-	void PositionControl(const UAVStates & state, const UAVCommand & command, const float dt);
+	void PositionControl(const UAVStates &state, const UAVCommand &command, const float dt);
 
 	/**
 	 * 执行姿态/角速度串级 PID，输出期望机体系角加速度。
 	 * @param state current UAV state
 	 * @param command desired command
 	 */
-	void AttitudeControl(const UAVStates & state, UAVCommand & command, const float dt, bool stabilized_mode);
+	void AttitudeControl(const UAVStates &state, UAVCommand &command, const float dt, bool stabilized_mode);
 
-	void calculateMotorCommand(const UAVCommand & command);
-	void controlAllocation(const UAVStates & state, const UAVCommand & command);
+	void calculateMotorCommand(const UAVCommand &command);
+	void controlAllocation(const UAVStates &state, const UAVCommand &command);
 
 private:
 	void Run() override;
@@ -153,7 +153,7 @@ private:
 	void publishNeutralTiltServos();
 	// 每个周期发布 fullvector 输出归属和遥控切换状态。
 	void publishFullvectorControlStatus(bool fullvector_active, bool native_requested, bool rc_switch_valid,
-					   float rc_switch_value);
+					    float rc_switch_value);
 	// 读取配置的 AUX 通道，判断遥控器是否请求 PX4 原生控制器接管。
 	bool evaluateNativeControllerRequest(float &rc_switch_value, bool &rc_switch_valid);
 
@@ -333,7 +333,7 @@ private:
 	Vector3f _vel_error_prev{};
 	bool _pid_state_initialized{false};
 	// true 表示对应 NED 轴当前有有限位置目标；用于无冲击地开关位置外环。
-	bool _position_axis_locked[3]{};
+	bool _position_axis_locked[3] {};
 	bool _position_outer_uses_relative_pose{false};
 
 	// 姿态/角速度串级 PID 的积分项和上一拍误差。
