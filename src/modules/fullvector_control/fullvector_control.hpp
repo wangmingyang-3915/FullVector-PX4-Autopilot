@@ -73,6 +73,7 @@
 #include <uORB/topics/manual_control_setpoint.h>
 // 订阅 PX4 当前飞行模式和轨迹目标；模块只在 Run() 中允许的模式下发布 fullvector 输出。
 #include <uORB/topics/trajectory_setpoint.h>
+#include <uORB/topics/target_relative_pose.h>
 #include <uORB/topics/vehicle_status.h>
 
 // Publications
@@ -169,6 +170,13 @@ private:
 		(ParamInt<px4::params::FV_RC_SW_CH>) _param_fv_rc_sw_ch,
 		(ParamFloat<px4::params::FV_RC_SW_THR>) _param_fv_rc_sw_thr,
 		(ParamBool<px4::params::FV_RC_SW_REV>) _param_fv_rc_sw_rev,
+		// Offboard 相对位姿外环目标，位置采用目标机 body FRD，姿态采用 roll/pitch/yaw。
+		(ParamFloat<px4::params::FV_REL_POS_X>) _param_fv_rel_pos_x,
+		(ParamFloat<px4::params::FV_REL_POS_Y>) _param_fv_rel_pos_y,
+		(ParamFloat<px4::params::FV_REL_POS_Z>) _param_fv_rel_pos_z,
+		(ParamFloat<px4::params::FV_REL_ROLL>) _param_fv_rel_roll,
+		(ParamFloat<px4::params::FV_REL_PITCH>) _param_fv_rel_pitch,
+		(ParamFloat<px4::params::FV_REL_YAW>) _param_fv_rel_yaw,
 		(ParamInt<px4::params::PRINT_A_EN>) _param_print_msg_a_en,
 		(ParamFloat<px4::params::PRINT_NUM_VALUE>) _param_print_num_value,
 		(ParamFloat<px4::params::FV_POS_P_X>)             _param_fv_pos_p_x,
@@ -240,6 +248,8 @@ private:
 	uORB::Subscription _vehicle_status_sub{ORB_ID(vehicle_status)};
 	// trajectory_setpoint 是 PX4 上层模式管理或 Offboard 输入生成的位置/速度/加速度/航向目标。
 	uORB::Subscription _trajectory_setpoint_sub{ORB_ID(trajectory_setpoint)};
+	// 本机相对目标机的 6DoF 位姿：父坐标系为目标机 body FRD，子坐标系为本机 body FRD。
+	uORB::Subscription _target_relative_pose_sub{ORB_ID(target_relative_pose)};
 	uORB::SubscriptionInterval _parameter_update_sub{ORB_ID(parameter_update), 1_s};
 	uORB::Subscription _vehicle_thrust_setpoint_sub{ORB_ID(vehicle_thrust_setpoint)};
 	uORB::Subscription _actuator_motors_sub{ORB_ID(actuator_motors)};
@@ -258,6 +268,9 @@ private:
 	// 缓存最新飞行状态和轨迹目标，Run() 中统一转换为 fullvector 控制命令。
 	vehicle_status_s _vehicle_status{};
 	trajectory_setpoint_s _trajectory_setpoint{};
+	target_relative_pose_s _target_relative_pose{};
+	bool _target_relative_pose_valid{false};
+	hrt_abstime _last_target_relative_pose_update{0};
 
 	// PID 参数矩阵：行对应 X/Y/Z 或 roll/pitch/yaw，列对应 P/I/D。
 	Matrix3f gain_pos_pid{};
@@ -285,6 +298,9 @@ private:
 
 	bool _controller_was_active{false};
 	bool _command_initialized{false};
+	// 定点模式 yaw 杆控制：进入 POSCTL 时捕获当前航向，松杆后保持释放时的航向。
+	float _posctl_yaw_sp{0.0f};
+	bool _posctl_yaw_sp_initialized{false};
 	// 自稳模式下由 yaw 摇杆积分出的航向目标，进入 STAB 时用当前航向初始化。
 	float _manual_yaw_sp{0.0f};
 	bool _manual_yaw_sp_initialized{false};
@@ -316,6 +332,9 @@ private:
 	Vector3f _vel_error_int{};
 	Vector3f _vel_error_prev{};
 	bool _pid_state_initialized{false};
+	// true 表示对应 NED 轴当前有有限位置目标；用于无冲击地开关位置外环。
+	bool _position_axis_locked[3]{};
+	bool _position_outer_uses_relative_pose{false};
 
 	// 姿态/角速度串级 PID 的积分项和上一拍误差。
 	Vector3f _att_error_int{};
@@ -323,4 +342,5 @@ private:
 	Vector3f _ang_vel_error_int{};
 	Vector3f _ang_vel_error_prev{};
 	bool _att_pid_state_initialized{false};
+	bool _attitude_outer_uses_relative_pose{false};
 };

@@ -94,6 +94,12 @@ void FullvectorControl::resetPositionPidState()
 	_pos_error_int.zero();
 	_vel_error_int.zero();
 	_pid_state_initialized = false;
+
+	for (bool &axis_locked : _position_axis_locked) {
+		axis_locked = false;
+	}
+
+	_position_outer_uses_relative_pose = false;
 }
 
 void FullvectorControl::resetAttitudePidState()
@@ -102,6 +108,9 @@ void FullvectorControl::resetAttitudePidState()
 	_att_error_int.zero();
 	_ang_vel_error_int.zero();
 	_att_pid_state_initialized = false;
+	_attitude_outer_uses_relative_pose = false;
+	// 定点和自稳 yaw 目标都依赖进入对应模式时的当前航向。
+	_posctl_yaw_sp_initialized = false;
 	// 自稳 yaw 目标依赖进入 STAB 时的当前航向，PID 重置时一并丢弃旧目标。
 	_manual_yaw_sp_initialized = false;
 }
@@ -500,6 +509,35 @@ void FullvectorControl::Run()
 	_vehicle_status_sub.update(&_vehicle_status);
 	_trajectory_setpoint_sub.update(&_trajectory_setpoint);
 
+	// 接收本机相对目标机 body FRD 的 6DoF 位姿。这里只做输入缓存和有效性门控，
+	// 在控制律显式使用该数据之前不改变任何执行器输出。
+	if (_target_relative_pose_sub.update(&_target_relative_pose)) {
+		_last_target_relative_pose_update = hrt_absolute_time();
+
+		const bool position_finite = PX4_ISFINITE(_target_relative_pose.position[0])
+					     && PX4_ISFINITE(_target_relative_pose.position[1])
+					     && PX4_ISFINITE(_target_relative_pose.position[2]);
+		const bool quaternion_finite = PX4_ISFINITE(_target_relative_pose.q[0])
+					       && PX4_ISFINITE(_target_relative_pose.q[1])
+					       && PX4_ISFINITE(_target_relative_pose.q[2])
+					       && PX4_ISFINITE(_target_relative_pose.q[3]);
+		const float quaternion_norm_sq = _target_relative_pose.q[0] * _target_relative_pose.q[0]
+					       + _target_relative_pose.q[1] * _target_relative_pose.q[1]
+					       + _target_relative_pose.q[2] * _target_relative_pose.q[2]
+					       + _target_relative_pose.q[3] * _target_relative_pose.q[3];
+		const bool quaternion_normalized = quaternion_finite && (fabsf(quaternion_norm_sq - 1.0f) < 0.05f);
+
+		_target_relative_pose_valid = _target_relative_pose.position_valid
+					      && _target_relative_pose.orientation_valid
+					      && position_finite
+					      && quaternion_normalized;
+	}
+
+	if ((_last_target_relative_pose_update == 0)
+	    || (hrt_elapsed_time(&_last_target_relative_pose_update) > 200_ms)) {
+		_target_relative_pose_valid = false;
+	}
+
 	float rc_switch_value = NAN;
 	bool rc_switch_valid = false;
 	// 先读取遥控器切换请求，确保本周期输出前完成仲裁。
@@ -520,6 +558,11 @@ void FullvectorControl::Run()
 	const bool module_active = fv_enabled && armed && !termination_mode;
 	// 本周期是否真正接管执行器输出。
 	const bool fullvector_active = module_active && fullvector_mode_allowed && !native_requested;
+
+	if (!posctl_mode) {
+		// 离开定点模式后丢弃航向锁定目标，下次进入时重新捕获当前航向。
+		_posctl_yaw_sp_initialized = false;
+	}
 
 	if (!stabilized_mode) {
 		// 离开自稳后不保留手动 yaw 目标，避免下次进入 STAB 时带入旧航向。
@@ -687,15 +730,27 @@ void FullvectorControl::Run()
 				      && (_trajectory_setpoint.timestamp != 0)
 				      && (hrt_elapsed_time(&_trajectory_setpoint.timestamp) < 500_ms);
 
-	// 定点模式要求三个欧拉角始终为 0，因此 yaw 目标也固定为 0 rad。
-	float yaw_sp_target = posctl_mode ? 0.0f : _current_command.Euler_angles(2);
+	const float current_yaw = Vector3f(Eulerf(_current_state.attitude))(2);
+
+	// 定点模式进入时捕获当前航向。roll/pitch 姿态仍固定为零，yaw 则允许遥控器控制。
+	if (posctl_mode && !_posctl_yaw_sp_initialized) {
+		_posctl_yaw_sp = current_yaw;
+		_posctl_yaw_sp_initialized = true;
+	}
+
+	float yaw_sp_target = posctl_mode ? _posctl_yaw_sp : _current_command.Euler_angles(2);
+	bool posctl_yaw_rate_active = false;
+	_current_command.angular_velocity.zero();
 
 	if (trajectory_valid) {
-		// POSCTL: FlightModeManager 会把遥控器输入转换成 trajectory_setpoint，但姿态在本模块固定为零姿态。
+		// POSCTL: FlightModeManager 会把遥控器输入转换成 trajectory_setpoint。
 		// OFFBOARD: trajectory_setpoint 通常来自外部控制端。
-		// 上层可能只填充部分轴的 setpoint：位置 NaN 保持上一目标，速度/加速度 NaN 则清零前馈。
+		// POSCTL 中位置 NaN 表示该轴解除位置锁定；其他模式继续保留最后一个有限位置目标。
 		for (int i = 0; i < 3; i++) {
-			if (PX4_ISFINITE(_trajectory_setpoint.position[i])) {
+			if (posctl_mode) {
+				_current_command.position(i) = _trajectory_setpoint.position[i];
+
+			} else if (PX4_ISFINITE(_trajectory_setpoint.position[i])) {
 				_current_command.position(i) = _trajectory_setpoint.position[i];
 			}
 
@@ -706,19 +761,35 @@ void FullvectorControl::Run()
 							  _trajectory_setpoint.acceleration[i] : 0.0f;
 		}
 
-		if (!posctl_mode && PX4_ISFINITE(_trajectory_setpoint.yaw)) {
+		if (posctl_mode) {
+			const float yaw_rate_sp = PX4_ISFINITE(_trajectory_setpoint.yawspeed) ?
+						  _trajectory_setpoint.yawspeed : 0.0f;
+			posctl_yaw_rate_active = fabsf(yaw_rate_sp) > FLT_EPSILON;
+
+			if (posctl_yaw_rate_active) {
+				// 打 yaw 杆时以角速度控制转向，并让角度目标跟随当前航向，避免航向环反向拉回。
+				_posctl_yaw_sp = current_yaw;
+				_current_command.angular_velocity(2) = yaw_rate_sp;
+
+			} else if (PX4_ISFINITE(_trajectory_setpoint.yaw)) {
+				// 松杆后 FlightModeManager 锁定释放时的航向，本模块随后持续保持该目标。
+				_posctl_yaw_sp = matrix::wrap_pi(_trajectory_setpoint.yaw);
+			}
+
+			yaw_sp_target = _posctl_yaw_sp;
+
+		} else if (PX4_ISFINITE(_trajectory_setpoint.yaw)) {
 			yaw_sp_target = matrix::wrap_pi(_trajectory_setpoint.yaw);
 		}
 	}
 
-	// fullvector 平移主要依靠电机倾转实现，定点模式姿态目标固定为零姿态；
+	// fullvector 平移主要依靠电机倾转实现：定点模式 roll/pitch 固定为零，yaw 保持且可由摇杆控制；
 	// 非定点模式姿态目标保持水平，yaw 默认保持切入时航向。
 	// 对姿态目标做限速，避免从自稳切到定点时产生姿态/航向阶跃。
 	Vector3f attitude_sp_target = _current_command.Euler_angles;
 	attitude_sp_target(0) = 0.0f;
 	attitude_sp_target(1) = 0.0f;
 	attitude_sp_target(2) = yaw_sp_target;
-	_current_command.angular_velocity.zero();
 
 	if (stabilized_mode) {
 		_manual_control_setpoint_sub.update(&_manual_control_setpoint);
@@ -757,7 +828,6 @@ void FullvectorControl::Run()
 		// 自稳模式下 yaw 杆积分成航向目标；松杆时捕获当前航向，让 yaw 公共倾转尽快释放。
 		constexpr float manual_yaw_deadband = 0.03f;
 		constexpr float max_manual_yaw_error = 0.6f; // rad，限制目标航向追不上的积分堆积。
-		const float current_yaw = Vector3f(Eulerf(_current_state.attitude))(2);
 		const bool yaw_stick_active = fabsf(yaw_stick) > manual_yaw_deadband;
 		const float yaw_rate_cmd = yaw_stick_active ? yaw_stick * max_manual_yaw_rate : 0.0f;
 
@@ -813,6 +883,12 @@ void FullvectorControl::Run()
 	for (int i = 0; i < 3; i++) {
 		if (stabilized_mode && (i == 2)) {
 			_current_command.Euler_angles(i) = attitude_sp_target(i);
+			continue;
+		}
+
+		if (posctl_mode && (i == 2) && posctl_yaw_rate_active) {
+			// 角速度控制期间同步当前航向，避免姿态目标限速器产生反向航向误差。
+			_current_command.Euler_angles(i) = current_yaw;
 			continue;
 		}
 
@@ -900,14 +976,71 @@ void FullvectorControl::PositionControl(const UAVStates & state, const UAVComman
 		return;
 	}
 
-	// 位置误差：当前内部位置目标减估计位置。
-	const Vector3f ep = command.position - state.position;
+	const bool use_relative_pose = (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_OFFBOARD)
+				       && _target_relative_pose_valid;
+	Vector3f ep{};
+	bool position_axis_locked[3]{};
+
+	if (use_relative_pose) {
+		// 机载电脑给出本机在目标机 body FRD 中的位置，先计算相对位置误差。
+		const Vector3f relative_position(_target_relative_pose.position);
+		const Vector3f relative_position_sp(_param_fv_rel_pos_x.get(),
+						    _param_fv_rel_pos_y.get(),
+						    _param_fv_rel_pos_z.get());
+		const Vector3f relative_error_target = relative_position_sp - relative_position;
+
+		// 后续速度环和执行器分配仍使用 NED，因此只把位置外环误差从目标机 FRD 旋转到 NED。
+		const Quatf q_target_body = Quatf(_target_relative_pose.q).normalized();
+		const Dcmf rotation_ned_target = Dcmf(state.attitude) * Dcmf(q_target_body).T();
+		ep = rotation_ned_target * relative_error_target;
+
+		for (bool &axis_locked : position_axis_locked) {
+			axis_locked = true;
+		}
+
+	} else {
+		// trajectory_setpoint 的位置为 NaN 时，该轴退出位置外环，仅跟踪速度/加速度目标。
+		for (int i = 0; i < 3; i++) {
+			position_axis_locked[i] = PX4_ISFINITE(command.position(i));
+
+			if (position_axis_locked[i]) {
+				ep(i) = command.position(i) - state.position(i);
+			}
+		}
+	}
+
+	if (use_relative_pose != _position_outer_uses_relative_pose) {
+		// 外环误差源切换时只清位置环历史，不改变速度环输入和积分状态。
+		_pos_error_int.zero();
+		_pos_error_prev = ep;
+		_position_outer_uses_relative_pose = use_relative_pose;
+
+		for (int i = 0; i < 3; i++) {
+			_position_axis_locked[i] = position_axis_locked[i];
+		}
+	}
 
 	if (!_pid_state_initialized) {
 		// 首次运行时用当前误差初始化历史项，避免微分项跳变。
 		_pos_error_prev = ep;
 		_vel_error_prev.zero();
 		_pid_state_initialized = true;
+
+		for (int i = 0; i < 3; i++) {
+			_position_axis_locked[i] = position_axis_locked[i];
+		}
+	}
+
+	// 每个轴独立开关位置外环。解锁时清积分；重新锁定时同步误差历史，避免微分冲击。
+	for (int i = 0; i < 3; i++) {
+		if (!position_axis_locked[i]) {
+			_pos_error_int(i) = 0.0f;
+			_pos_error_prev(i) = 0.0f;
+
+		} else if (!_position_axis_locked[i]) {
+			_pos_error_int(i) = 0.0f;
+			_pos_error_prev(i) = ep(i);
+		}
 	}
 
 	// 位置外环 PID：根据位置误差生成内部期望速度。
@@ -924,7 +1057,10 @@ void FullvectorControl::PositionControl(const UAVStates & state, const UAVComman
 	const Vector3f pos_ki{gain_pos_pid(0, 1), gain_pos_pid(1, 1), gain_pos_pid(2, 1)};
 	const Vector3f pos_kd{gain_pos_pid(0, 2), gain_pos_pid(1, 2), gain_pos_pid(2, 2)};
 
-	Vector3f v_sp = command.velocity + pos_kp.emult(ep) + pos_ki.emult(_pos_error_int) + pos_kd.emult(dep);
+	// 主机定点的相对位置控制不使用 trajectory_setpoint 速度前馈，避免相对误差为零时仍产生运动指令。
+	// 非相对控制分支继续保留原有速度前馈。
+	const Vector3f velocity_ff = use_relative_pose ? Vector3f{} : command.velocity;
+	Vector3f v_sp = velocity_ff + pos_kp.emult(ep) + pos_ki.emult(_pos_error_int) + pos_kd.emult(dep);
 
 	// 上层速度作为前馈叠加，之后统一限幅，避免内环指令过大。
 	for (int i = 0; i < 3; i++) {
@@ -944,13 +1080,19 @@ void FullvectorControl::PositionControl(const UAVStates & state, const UAVComman
 	const Vector3f vel_ki{gain_vel_pid(0, 1), gain_vel_pid(1, 1), gain_vel_pid(2, 1)};
 	const Vector3f vel_kd{gain_vel_pid(0, 2), gain_vel_pid(1, 2), gain_vel_pid(2, 2)};
 
-	const Vector3f acc_cmd = command.acceleration + vel_kp.emult(ev) + vel_ki.emult(_vel_error_int) + vel_kd.emult(dev);
+	// 同理，相对位置控制假定主机加速度为零，不叠加 trajectory_setpoint 加速度前馈。
+	const Vector3f acceleration_ff = use_relative_pose ? Vector3f{} : command.acceleration;
+	const Vector3f acc_cmd = acceleration_ff + vel_kp.emult(ev) + vel_ki.emult(_vel_error_int) + vel_kd.emult(dev);
 	// 保存给后续电机倾转角和电机转速计算使用。
 	_pos_acc_cmd = acc_cmd;
 
 	// 更新历史误差，供下一周期微分项使用。
 	_pos_error_prev = ep;
 	_vel_error_prev = ev;
+
+	for (int i = 0; i < 3; i++) {
+		_position_axis_locked[i] = position_axis_locked[i];
+	}
 
 	// 发布位置控制器输出，便于日志查验或其他模块观察当前加速度指令。
 	vehicle_local_position_setpoint_s position_controller_output{};
@@ -974,9 +1116,24 @@ void FullvectorControl::AttitudeControl(const UAVStates & state, UAVCommand & co
 		return;
 	}
 
-	// 将当前四元数姿态转为欧拉角，与目标欧拉角做误差。
-	const Vector3f euler_cur = Vector3f(Eulerf(state.attitude));
-	const Vector3f euler_sp(command.Euler_angles(0), command.Euler_angles(1), command.Euler_angles(2));
+	const bool use_relative_pose = (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_OFFBOARD)
+				       && _target_relative_pose_valid;
+	Vector3f euler_cur;
+	Vector3f euler_sp;
+
+	if (use_relative_pose) {
+		// 与现有绝对姿态环一致：先把机载电脑给出的相对四元数转成 roll/pitch/yaw。
+		euler_cur = Vector3f(Eulerf(Quatf(_target_relative_pose.q).normalized()));
+		euler_sp = Vector3f(_param_fv_rel_roll.get(),
+				    _param_fv_rel_pitch.get(),
+				    _param_fv_rel_yaw.get());
+
+	} else {
+		// 非 Offboard 或相对位姿无效时保留原有绝对姿态目标。
+		euler_cur = Vector3f(Eulerf(state.attitude));
+		euler_sp = command.Euler_angles;
+	}
+
 	const Vector3f angular_velocity_ff = command.angular_velocity;
 
 	// 姿态角误差需要 wrap 到 [-pi, pi]，避免跨越 pi 时出现大跳变。
@@ -984,6 +1141,13 @@ void FullvectorControl::AttitudeControl(const UAVStates & state, UAVCommand & co
 	e_att(0) = matrix::wrap_pi(e_att(0));
 	e_att(1) = matrix::wrap_pi(e_att(1));
 	e_att(2) = matrix::wrap_pi(e_att(2));
+
+	if (use_relative_pose != _attitude_outer_uses_relative_pose) {
+		// 外环误差源切换时只清姿态环历史，不改变角速度环输入和积分状态。
+		_att_error_int.zero();
+		_att_error_prev = e_att;
+		_attitude_outer_uses_relative_pose = use_relative_pose;
+	}
 
 	if (!_att_pid_state_initialized) {
 		// 首次运行初始化微分历史项。
@@ -1016,10 +1180,13 @@ void FullvectorControl::AttitudeControl(const UAVStates & state, UAVCommand & co
 
 	Vector3f omega_sp = att_kp.emult(e_att) + att_ki.emult(_att_error_int) + att_kd.emult(de_att);
 
-	if (stabilized_mode) {
-		constexpr float max_stabilized_yaw_rate = 2.0f; // rad/s，与手动 yaw 目标积分限幅保持一致。
+	const bool manual_yaw_rate_control = stabilized_mode
+					     || (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_POSCTL);
+
+	if (manual_yaw_rate_control) {
+		constexpr float max_manual_yaw_rate = 2.0f; // rad/s，与手动 yaw 目标积分限幅保持一致。
 		omega_sp(2) += angular_velocity_ff(2);
-		omega_sp(2) = math::constrain(omega_sp(2), -max_stabilized_yaw_rate, max_stabilized_yaw_rate);
+		omega_sp(2) = math::constrain(omega_sp(2), -max_manual_yaw_rate, max_manual_yaw_rate);
 	}
 
 	// 将姿态外环生成的期望角速度写回 command，供调试或后续扩展使用。

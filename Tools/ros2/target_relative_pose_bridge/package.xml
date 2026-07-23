@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>target_relative_pose_bridge</name>
+  <version>0.1.0</version>
+  <description>Publishes the observer vehicle's 6DoF body-FRD pose relative to a tracked target vehicle.</description>
+  <maintainer email="3112311639@qq.com">Mingyang Wang</maintainer>
+  <license>BSD-3-Clause</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>px4_msgs</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

@@ -42,6 +42,9 @@ publications:
 
 # Create uORB::Publication
 subscriptions:
+  - topic: /fmu/in/target_relative_pose
+    type: px4_msgs::msg::TargetRelativePose
+
   - topic: /fmu/in/offboard_control_mode
     type: px4_msgs::msg::OffboardControlMode
 

@@ -34,6 +34,14 @@ import os
 
 typedef bool (*UcdrSerializeMethod)(const void* data, ucdrBuffer& buf, int64_t time_offset);
 
+@[for pub in publications]@
+static bool serialize_@(pub['simple_base_type'])(const void *data, ucdrBuffer &buf, int64_t time_offset)
+{
+	return ucdr_serialize_@(pub['simple_base_type'])(*static_cast<const @(pub['simple_base_type'])_s *>(data), buf,
+			time_offset);
+}
+@[end for]@
+
 static constexpr int max_topic_size = 512;
 @[    for pub in publications]@
 static_assert(sizeof(@(pub['simple_base_type'])_s) <= max_topic_size, "topic too large, increase max_topic_size");
@@ -79,7 +87,7 @@ struct SendTopicsSubs {
 			  "@(pub['topic'])",
 			  get_message_version<@(pub['simple_base_type'])_s>(),
 			  ucdr_topic_size_@(pub['simple_base_type'])(),
-			  &ucdr_serialize_@(pub['simple_base_type']),
+			  &serialize_@(pub['simple_base_type']),
 			  static_cast<uint64_t>((@(pub.get('rate_limit', 0)) > 0) ? (1e3 / @(pub.get('rate_limit', 1e3))) : UXRCE_DEFAULT_POLL_INTERVAL_MS),
 			},
 @[    end for]@
@@ -200,7 +208,7 @@ bool RcvTopicsPubs::init(uxrSession *session, uxrStreamId reliable_out_stream_id
 {
 @[    for idx, sub in enumerate(subscriptions + subscriptions_multi)]@
 	{
-			uint16_t queue_depth = orb_get_queue_size(ORB_ID(@(sub['simple_base_type']))) * 2; // use a bit larger queue size than internal
+			uint16_t queue_depth = uORB::DefaultQueueSize<@(sub['simple_base_type'])_s>::value * 2; // use a bit larger queue size than internal
 			uint32_t message_version = get_message_version<@(sub['simple_base_type'])_s>();
 			create_data_reader(session, reliable_out_stream_id, best_effort_in_stream_id, participant_id, @(idx), client_namespace, "@(sub['topic'])", message_version, "@(sub['dds_type'])", queue_depth);
 	}

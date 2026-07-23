@@ -105,6 +105,8 @@ public:
 	uint64_t sync_stamp(uint64_t usec);
 
 	int64_t offset() const { return (int64_t)_time_offset; }
+	bool converged() const { return sync_converged(); }
+	void reset() { reset_filter(); }
 
 private:
 
