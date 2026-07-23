@@ -566,7 +566,7 @@ parameters:
 
       FV_YAW_MIX_WT:
         type: float
-        default: 0.5
+        default: 0.6
         decimal: 3
         min: 0.0
         max: 1.0
@@ -677,3 +677,75 @@ parameters:
           short: 反转遥控器切换方向
           long: |
             关闭时，高位请求 PX4 原生控制器；开启时，低位请求 PX4 原生控制器。
+
+      FV_REL_POS_X:
+        type: float
+        default: 0.0
+        unit: m
+        decimal: 2
+        min: -20.0
+        max: 20.0
+        description:
+          short: Offboard 期望相对前向位置
+          long: |
+            本机机体中心在目标机 body FRD 中的期望 X 位置，正方向为目标机前方。
+
+      FV_REL_POS_Y:
+        type: float
+        default: 0.0
+        unit: m
+        decimal: 2
+        min: -20.0
+        max: 20.0
+        description:
+          short: Offboard 期望相对右向位置
+          long: |
+            本机机体中心在目标机 body FRD 中的期望 Y 位置，正方向为目标机右方。
+
+      FV_REL_POS_Z:
+        type: float
+        default: 0.0
+        unit: m
+        decimal: 2
+        min: -20.0
+        max: 20.0
+        description:
+          short: Offboard 期望相对下向位置
+          long: |
+            本机机体中心在目标机 body FRD 中的期望 Z 位置，正方向为目标机下方。
+
+      FV_REL_ROLL:
+        type: float
+        default: 0.0
+        unit: rad
+        decimal: 3
+        min: -3.1416
+        max: 3.1416
+        description:
+          short: Offboard 期望相对滚转角
+          long: |
+            本机 body FRD 到目标机 body FRD 相对四元数所对应的期望 roll 角。
+
+      FV_REL_PITCH:
+        type: float
+        default: 0.0
+        unit: rad
+        decimal: 3
+        min: -1.5708
+        max: 1.5708
+        description:
+          short: Offboard 期望相对俯仰角
+          long: |
+            本机 body FRD 到目标机 body FRD 相对四元数所对应的期望 pitch 角。
+
+      FV_REL_YAW:
+        type: float
+        default: 0.0
+        unit: rad
+        decimal: 3
+        min: -3.1416
+        max: 3.1416
+        description:
+          short: Offboard 期望相对偏航角
+          long: |
+            本机 body FRD 到目标机 body FRD 相对四元数所对应的期望 yaw 角。

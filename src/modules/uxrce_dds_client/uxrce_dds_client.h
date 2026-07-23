@@ -38,8 +38,6 @@
 
 #include <src/modules/uxrce_dds_client/dds_topics.h>
 
-#include <uORB/topics/message_format_request.h>
-#include <uORB/topics/message_format_response.h>
 #include <uORB/Subscription.hpp>
 
 #include <lib/timesync/Timesync.hpp>
@@ -125,14 +123,9 @@ private:
 
 	bool setBaudrate(int fd, unsigned baud);
 
-	void handleMessageFormatRequest();
-
 	void calculateTxRxRate();
 	void checkConnectivity(uxrSession *session);
 	void resetConnectivityCounters();
-
-	uORB::Publication<message_format_response_s> _message_format_response_pub{ORB_ID(message_format_response)};
-	uORB::Subscription _message_format_request_sub{ORB_ID(message_format_request)};
 
 	/** Synchronizes the system clock if the time is off by more than 5 seconds */
 	void syncSystemClock(uxrSession *session);

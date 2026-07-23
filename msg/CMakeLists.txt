@@ -179,6 +179,7 @@ set(msg_files
 	SystemPower.msg
 	TakeoffStatus.msg
 	TaskStackInfo.msg
+	TargetRelativePose.msg
 	TecsStatus.msg
 	TelemetryStatus.msg
 	TiltrotorExtraControls.msg
