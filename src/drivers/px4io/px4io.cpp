@@ -1743,6 +1743,7 @@ Output driver communicating with the IO co-processor.
 	PRINT_MODULE_USAGE_NAME("px4io", "driver");
 	PRINT_MODULE_USAGE_COMMAND("start");
 
+	PRINT_MODULE_USAGE_COMMAND_DESCR("supported", "Return success when PX4IO is available");
 	PRINT_MODULE_USAGE_COMMAND_DESCR("checkcrc", "Check CRC for a firmware file against current code on IO");
 	PRINT_MODULE_USAGE_ARG("<filename>", "Firmware file", false);
 	PRINT_MODULE_USAGE_COMMAND_DESCR("update", "Update IO firmware");

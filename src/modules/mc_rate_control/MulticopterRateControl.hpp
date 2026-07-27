@@ -132,7 +132,9 @@ private:
 	float _control_energy[4] {};
 
 	DEFINE_PARAMETERS(
+#if defined(CONFIG_MODULES_FULLVECTOR_CONTROL)
 		(ParamBool<px4::params::FV_ENABLE>) _param_fv_enable,
+#endif
 		(ParamFloat<px4::params::MC_ROLLRATE_P>) _param_mc_rollrate_p,
 		(ParamFloat<px4::params::MC_ROLLRATE_I>) _param_mc_rollrate_i,
 		(ParamFloat<px4::params::MC_RR_INT_LIM>) _param_mc_rr_int_lim,

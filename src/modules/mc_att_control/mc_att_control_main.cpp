@@ -286,7 +286,13 @@ MulticopterAttitudeControl::Run()
 		_fullvector_control_status_sub.update(&fullvector_control_status);
 		const bool fullvector_status_fresh = (fullvector_control_status.timestamp != 0)
 						     && (hrt_elapsed_time(&fullvector_control_status.timestamp) < 200_ms);
-		const bool fullvector_stabilized = (_param_fv_enable.get() == 1)
+		bool fullvector_enabled = false;
+
+#if defined(CONFIG_MODULES_FULLVECTOR_CONTROL)
+		fullvector_enabled = (_param_fv_enable.get() == 1);
+#endif
+
+		const bool fullvector_stabilized = fullvector_enabled
 						   && (_nav_state == vehicle_status_s::NAVIGATION_STATE_STAB)
 						   && fullvector_status_fresh
 						   && fullvector_control_status.fullvector_active;
