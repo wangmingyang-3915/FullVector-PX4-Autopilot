@@ -1,8 +1,8 @@
 <?xml version="1.0"?>
 <package format="3">
   <name>px4_msgs</name>
-  <version>0.0.1</version>
-  <description>Minimal PX4 ROS 2 interface package for the custom target-relative-pose bridge.</description>
+  <version>0.0.2</version>
+  <description>PX4 ROS 2 interfaces generated from the matching PX4-Autopilot message definitions.</description>
   <maintainer email="3112311639@qq.com">Mingyang Wang</maintainer>
   <license>BSD-3-Clause</license>
 

@@ -149,8 +149,14 @@ MulticopterRateControl::Run()
 		fullvector_control_status_s fullvector_control_status{};
 		_fullvector_control_status_sub.update(&fullvector_control_status);
 		const bool fullvector_status_fresh = (fullvector_control_status.timestamp != 0)
-						    && (hrt_elapsed_time(&fullvector_control_status.timestamp) < 200_ms);
-		const bool fullvector_stabilized = (_param_fv_enable.get() == 1)
+						     && (hrt_elapsed_time(&fullvector_control_status.timestamp) < 200_ms);
+		bool fullvector_enabled = false;
+
+#if defined(CONFIG_MODULES_FULLVECTOR_CONTROL)
+		fullvector_enabled = (_param_fv_enable.get() == 1);
+#endif
+
+		const bool fullvector_stabilized = fullvector_enabled
 						   && (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_STAB)
 						   && fullvector_status_fresh
 						   && fullvector_control_status.fullvector_active;
