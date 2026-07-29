@@ -28,7 +28,7 @@
 | `yahboom_ws` 私有仓库提交 `2907a9d` | 必需基线 | 包含已经修改的 `apriltag_ros`、硬件相机启动链路和 systemd 单元 |
 | `Tools/ros2/px4_msgs`、`Tools/ros2/target_relative_pose_bridge` | 相对位姿功能必需 | 私有仓库提交时尚未包含 |
 | Q12-150-10 相机内参 | 条件必需 | 仅可直接用于同一相机、镜头、焦距、对焦和 1280×1024 模式；否则必须重标定 |
-| `tags_36h11.yaml` 的 `sensor_data` QoS | 必需 | 仓库基线仍是 `default`，后续实机修改显著降低了排队延迟 |
+| `tags_36h11.yaml` 的 `sensor_data` QoS 和最新帧队列 | 必需 | 仓库基线仍是 `default`，后续实机修改显著降低了排队延迟 |
 | 最终 `start_apriltag_stack.sh` | 必需 | 仓库基线缺少后续加入的两组外参、相对位姿桥和 XRCE Agent |
 | `apriltag-stack.service` | 必需 | 开机自启及异常重启 |
 | `apriltag-performance.service` | 性能目标需要 | 约 60 Hz 需要；会增加功耗和发热 |
@@ -40,7 +40,7 @@
 | 简体中文界面 | 可选 | 不影响算法 |
 | `camera_info_sync.py` | 不迁移 | 已被 C++ 节点缓存最新 `CameraInfo` 取代 |
 | GP100-6 旧标定 | 不迁移到运行态 | 只留作历史，不得覆盖 Q12 结果 |
-| `decimate=1.6` | 不迁移 | 仅短时试验，检测失败后已恢复为 1.5 |
+| 未验证的 `decimate>2.0` | 不迁移 | 最终实机配置为 2.0，更高值未通过运行范围验收 |
 | `build/`、`install/`、`log/`、PID 和临时日志 | 不迁移 | 新系统重新构建和生成 |
 | 历史维护网 IP `192.168.31.118`、`192.168.23.145` | 不照搬 | 均为当时 Wi-Fi/DHCP 地址，不影响直连飞控网段 |
 | SSH 私钥和历史密码 | 禁止迁移到归档 | 新客户端重新生成；只安装新的公钥 |
@@ -86,7 +86,7 @@ ROS_DOMAIN_ID：99
 ROS 图像：mono8
 AprilTag family：36h11
 线程：6
-decimate：1.5
+decimate：2.0
 blur：0.0
 refine：1
 sharpening：0.25
@@ -96,12 +96,18 @@ pose：pnp
 历史测试结果：
 
 - 相机话题约 60 Hz；
-- 锁定 Jetson CPU/内存最高频率后，AprilTag 检测约 59.7 Hz；
-- 总 CPU 约 289%；
-- 温度约 55°C；
-- 功耗约从 6.7 W 上升到 9.5 W；
-- 改用 `sensor_data` QoS 后，相对位姿约 60.005 Hz，有效率 100%；
-- 位姿年龄平均约 55.15 ms，P95 约 68.92 ms，最大约 83.71 ms。
+- 锁定 Jetson CPU/内存最高频率、`decimate=2.0` 且图像队列只保留最新帧后，
+  AprilTag 检测约 56 Hz；
+- 生产态 60 秒实测中，检测最大间隔约 52 ms，ID 1 命中率 100%；
+- 检测样本年龄平均约 40.3 ms，P95 约 42.8 ms，最大约 46.6 ms；
+- 相对位姿约 59.7 Hz，有效率 100%；
+- 平面 PnP 改为 IPPE 双解连续选解后，静态 20 秒测试的滚转范围由
+  12.22° 降到 1.98°，单帧滚转跳变由 11.82° 降到 1.78°，虚假 Z
+  位移范围由 13.5 cm 降到 2.2 cm；
+- 两机调平、静止且机体轴平行时，用 1801 个全有效相对姿态样本标定固定安装
+  零偏；补偿前平均 RPY 为 `[-4.181°, -0.906°, 0.947°]`，补偿后 1671
+  个全有效样本的平均残差为 `[-0.009°, -0.005°, 0.045°]`；
+- 测试时 CPU 温度约 50°C、六核 1.728 GHz，无热降频，整机功耗约 10 W。
 
 这些数值是特定画面、散热、供电和 Jetson 状态下的历史测量值，新机器验收时允许有差异。
 
@@ -292,7 +298,18 @@ source /home/jetson/yahboom_ws/install/setup.bash
    - 单独订阅并缓存最新 `CameraInfo`；
    - 图像回调直接使用缓存内参；
    - 避免一份 1280×1024 图像的 Python 反序列化和再次发布。
-5. Release 构建。
+5. 图像订阅的 QoS 队列显式设为 `keep_last(1)`：
+   - 检测偶发长耗时后直接处理最新帧；
+   - 不再继续追赶已经过时的缓存图像；
+   - 不要用额外的 1280×1024@60 原始图像订阅器做长期性能监控，否则诊断器本身会增加传输负载。
+6. 平面位姿解算使用 OpenCV IPPE 双解和时间连续性选解：
+   - `/image_raw` 角点使用 `CameraInfo.K` 和真实畸变系数 `D`，不再错误地使用
+     矫正投影矩阵 `P` 加空畸变；
+   - `SOLVEPNP_IPPE` 同时生成两个平面候选解；
+   - 过滤负深度解，并结合重投影误差和最近 500 ms 内上一帧四元数选择连续解支；
+   - 保持原有 `tag1` 坐标轴定义和四元数符号连续性；
+   - 不直接滤波欧拉角，避免掩盖平面 PnP 翻转。
+7. Release 构建。
 
 历史备份：
 
@@ -324,7 +341,7 @@ source /home/jetson/yahboom_ws/install/setup.bash
 
     detector:
       threads: 6
-      decimate: 1.5
+      decimate: 2.0
       blur: 0.0
       refine: true
       sharpening: 0.25
@@ -341,7 +358,10 @@ source /home/jetson/yahboom_ws/install/setup.bash
 重要说明：
 
 - 私有仓库 `2907a9d` 中仍是 `qos_profile: default`，新机必须改为 `sensor_data`；
-- `decimate=1.6` 只做过短时试验，当时不能稳定检出标签，最终已恢复为 `1.5`；
+- 当前相机、分辨率和 8 cm 标签的实机最终值是 `decimate=2.0`；更换标签尺寸、
+  视距或镜头后必须重新验证，不能盲目继续增大；
+- 基线 `decimate=1.5` 的 30 秒测试中检测最大间隔曾达到约 431 ms；改为 2.0
+  并只保留最新图像后，生产态 60 秒最大间隔约 52 ms，位姿有效率 100%；
 - `0.08 m` 必须是实际 AprilTag 黑色外边框的边长。若打印尺寸改变，位置尺度会同比例错误；
 - 当前相对机位姿链使用 `tag1`。ID 0 和 2 仍允许检测，但没有配置各自的目标机安装外参。
 
@@ -470,15 +490,30 @@ quaternion xyzw = [0.000000, 0.7071067811865476,
 ### 9.2 靶标机体外参
 
 物理安装关系：标签中心在目标机中心后方 1.0 cm、左侧 8.0 cm、上方
-3.6 cm，标签正面水平向左。对应 `target_body_frd -> tag1` 的旋转四元数
-`xyzw = [0.7071067811865476, 0, 0, 0.7071067811865476]`。
+3.6 cm，标签正面水平向左。理想轴向关系不能包含支架、打印面和机体调平的
+小角度误差，因此最终运行值还合并了相对位姿零姿态标定补偿。
 
 因为 `apriltag_ros` 已发布 `camera_link -> tag1`，为保持 TF 单父树，实际发布逆向静态变换：
 
 ```text
 tag1 -> target_body_frd
 translation xyz = [0.010, 0.036, -0.080] m
-quaternion xyzw = [-0.7071067811865476, 0, 0, 0.7071067811865476]
+quaternion xyzw = [-0.517953951607758, 0.517723702335759,
+                   -0.473344004169779, 0.489521527381772]
+```
+
+该四元数由理想轴向四元数 `[-0.5, 0.5, -0.5, 0.5]` 右乘零姿态下
+`target_body_frd -> body_frd` 的 30 秒平均四元数得到。标定条件和结果：
+
+```text
+有效样本：1801，无效样本：0
+补偿前平均 RPY：[-4.180515, -0.906184, 0.947433] deg
+补偿前平均四元数 wxyz：
+[0.999271592748, -0.036406061196, -0.008203886242, 0.007973636970]
+
+补偿后有效样本：1671，无效样本：0
+补偿后平均 RPY：[-0.009043, -0.005499, 0.045016] deg
+平均角误差：0.528 deg，最大角误差：1.707 deg
 ```
 
 最终 TF 树：
@@ -562,7 +597,8 @@ pids+=("$!")
 
 /opt/ros/humble/lib/tf2_ros/static_transform_publisher \
     --x 0.010 --y 0.036 --z -0.080 \
-    --qx -0.7071067811865476 --qy 0.0 --qz 0.0 --qw 0.7071067811865476 \
+    --qx -0.517953951607758 --qy 0.517723702335759 \
+    --qz -0.473344004169779 --qw 0.489521527381772 \
     --frame-id tag1 \
     --child-frame-id target_body_frd &
 pids+=("$!")
@@ -961,7 +997,7 @@ ros2 run tf2_ros tf2_echo camera_link tag1
 ```text
 qos_profile = sensor_data
 threads = 6
-decimate = 1.5
+decimate = 2.0
 tag1 可检出
 四元数范数约为 1
 ```
@@ -1028,7 +1064,9 @@ start_xrce_agent_ethernet.sh
 /home/jetson/yahboom_ws/src/apriltag_ros/
   ROS Humble/libapriltag 3.2 兼容修改
   CameraInfo C++ 缓存优化
-  cfg/tags_36h11.yaml 的 sensor_data QoS
+  图像订阅 keep_last(1) 最新帧队列
+  原始图像 K/D + IPPE 双解连续选解
+  cfg/tags_36h11.yaml 的 sensor_data QoS 和 decimate=2.0
 
 /home/jetson/yahboom_ws/src/px4_msgs/
 /home/jetson/yahboom_ws/src/target_relative_pose_bridge/
@@ -1063,6 +1101,13 @@ zh_CN.UTF-8                      中文界面
 /home/jetson/yahboom_ws/start_apriltag_stack.sh.pre_hw_decode
 /home/jetson/yahboom_ws/src/apriltag_ros/src/AprilTagNode.cpp.pre_sync_optimization
 /home/jetson/yahboom_ws/src/apriltag_ros/cfg/tags_36h11.yaml.before_sensor_data_qos_20260724
+/home/jetson/yahboom_ws/src/apriltag_ros/src/AprilTagNode.cpp.before_dropout_fix_20260727
+/home/jetson/yahboom_ws/src/apriltag_ros/cfg/tags_36h11.yaml.before_dropout_fix_20260727
+/home/jetson/yahboom_ws/src/apriltag_ros/src/AprilTagNode.cpp.before_ippe_fix_20260727
+/home/jetson/yahboom_ws/src/apriltag_ros/src/pose_estimation.cpp.before_ippe_fix_20260727
+/home/jetson/yahboom_ws/src/apriltag_ros/src/pose_estimation.hpp.before_ippe_fix_20260727
+/home/jetson/yahboom_ws/start_apriltag_stack.sh.before_target_rotation_fix_20260727
+/home/jetson/yahboom_ws/start_apriltag_stack.sh.before_relative_orientation_calibration_20260727
 /etc/systemd/system/apriltag-stack.service.pre_max_clocks
 ```
 
@@ -1085,7 +1130,7 @@ zh_CN.UTF-8                      中文界面
 2. 实际运行的相机内参与当前相机组件匹配；
 3. 标签尺寸和两组安装外参与真实机械安装匹配；
 4. 相对位姿约 60 Hz，遮挡和恢复逻辑正确；
-5. `sensor_data` QoS 生效，位姿年龄没有持续超过 200 ms；
+5. `sensor_data` QoS 和 `keep_last(1)` 生效，位姿年龄没有持续超过 200 ms；
 6. 散热和供电能支持所选性能模式；
 7. 如需飞控链路，Agent 和 PX4 Client 完成真实 DDS session，uORB 能读到消息；
 8. SSH 或 NoMachine 至少保留一种可靠维护入口；
