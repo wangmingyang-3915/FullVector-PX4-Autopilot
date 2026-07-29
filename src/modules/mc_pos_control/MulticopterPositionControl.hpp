@@ -55,6 +55,7 @@
 #include <uORB/Publication.hpp>
 #include <uORB/Subscription.hpp>
 #include <uORB/SubscriptionCallback.hpp>
+#include <uORB/topics/fullvector_control_status.h>
 #include <uORB/topics/hover_thrust_estimate.h>
 #include <uORB/topics/parameter_update.h>
 #include <uORB/topics/trajectory_setpoint.h>
@@ -101,6 +102,7 @@ private:
 	uORB::SubscriptionInterval _parameter_update_sub{ORB_ID(parameter_update), 1_s};
 
 	uORB::Subscription _hover_thrust_estimate_sub{ORB_ID(hover_thrust_estimate)};
+	uORB::Subscription _fullvector_control_status_sub{ORB_ID(fullvector_control_status)};
 	uORB::Subscription _trajectory_setpoint_sub{ORB_ID(trajectory_setpoint)};
 	uORB::Subscription _vehicle_constraints_sub{ORB_ID(vehicle_constraints)};
 	uORB::Subscription _vehicle_control_mode_sub{ORB_ID(vehicle_control_mode)};
@@ -110,6 +112,7 @@ private:
 	hrt_abstime _time_position_control_enabled{0};
 
 	trajectory_setpoint_s _setpoint{PositionControl::empty_trajectory_setpoint};
+	fullvector_control_status_s _fullvector_control_status{};
 	vehicle_control_mode_s _vehicle_control_mode{};
 
 	vehicle_constraints_s _vehicle_constraints {
