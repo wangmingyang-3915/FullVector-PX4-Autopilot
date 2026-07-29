@@ -357,6 +357,11 @@ void MulticopterPositionControl::Run()
 		}
 
 		_vehicle_land_detected_sub.update(&_vehicle_land_detected);
+		_fullvector_control_status_sub.update(&_fullvector_control_status);
+		const bool fullvector_status_fresh = (_fullvector_control_status.timestamp != 0)
+						     && (hrt_elapsed_time(&_fullvector_control_status.timestamp) < 200_ms);
+		const bool fullvector_owns_position_output = fullvector_status_fresh
+				&& _fullvector_control_status.fullvector_active;
 
 		if (_param_mpc_use_hte.get()) {
 			hover_thrust_estimate_s hte;
@@ -552,7 +557,13 @@ void MulticopterPositionControl::Run()
 			vehicle_local_position_setpoint_s local_pos_sp{};
 			_control.getLocalPositionSetpoint(local_pos_sp);
 			local_pos_sp.timestamp = hrt_absolute_time();
-			_local_pos_sp_pub.publish(local_pos_sp);
+
+			// FlightModeManager uses this topic as velocity-controller feedback in MPC_POS_MODE=4.
+			// While fullvector owns the actuators, it also publishes the matching position-controller
+			// feedback. Keep this native output silent to avoid two controllers racing on one topic.
+			if (!fullvector_owns_position_output) {
+				_local_pos_sp_pub.publish(local_pos_sp);
+			}
 
 			// Publish attitude setpoint output
 			vehicle_attitude_setpoint_s attitude_setpoint{};
