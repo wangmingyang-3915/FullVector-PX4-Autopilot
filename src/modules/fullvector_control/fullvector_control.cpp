@@ -1293,8 +1293,7 @@ void FullvectorControl::calculateMotorCommand(const UAVStates &state, const UAVC
 	const float yaw_motor_mix_weight = math::constrain(_param_fv_yaw_mix_wt.get(), 0.0f, 1.0f);
 
 	// 位置环输出使用 NED 世界坐标，而四个倾转舵机的几何分配定义在机体系。
-	// 先按当前航向将水平加速度旋转到 body FRD；否则飞机航向不为零时，
-	// 位置修正方向会随航向一起旋转（例如 yaw=90 deg 时 N/E 轴近似互换）。
+	// 按当前航向将水平加速度旋转到 body FRD 坐标系，便于后续计算四个电机的基础倾转角。
 	const float current_yaw = Vector3f(Eulerf(state.attitude))(2);
 	const float cos_yaw = cosf(current_yaw);
 	const float sin_yaw = sinf(current_yaw);
