@@ -133,7 +133,7 @@ public:
 	 */
 	void AttitudeControl(const UAVStates &state, UAVCommand &command, const float dt, bool stabilized_mode);
 
-	void calculateMotorCommand(const UAVCommand &command);
+	void calculateMotorCommand(const UAVStates &state, const UAVCommand &command);
 	void controlAllocation(const UAVStates &state, const UAVCommand &command);
 
 private:
@@ -230,7 +230,7 @@ private:
 		(ParamFloat<px4::params::FV_J_RP>)		  _param_fv_J_RP
 	)
 
-	// 控制器调试输出和执行器输出。
+	// 位置控制反馈、控制器调试输出和执行器输出。
 	uORB::Publication<vehicle_local_position_setpoint_s> _position_controller_output_pub{ORB_ID(vehicle_local_position_setpoint)};
 	uORB::Publication<vehicle_angular_acceleration_setpoint_s> _attitude_controller_output_pub{ORB_ID(vehicle_angular_acceleration_setpoint)};
 	// actuator_motors/actuator_servos 发布的是 PX4 期望的归一化输出，前四路对应四个电机和四个倾转舵机。

@@ -1101,12 +1101,24 @@ void FullvectorControl::PositionControl(const UAVStates &state, const UAVCommand
 		_position_axis_locked[i] = position_axis_locked[i];
 	}
 
-	// 发布位置控制器输出，便于日志查验或其他模块观察当前加速度指令。
+	// 发布当前控制器的完整位置/速度/加速度目标。
+	// FlightModeManager 在 MPC_POS_MODE=4 下会用其中的速度作为开环切换反馈。
 	vehicle_local_position_setpoint_s position_controller_output{};
 	position_controller_output.timestamp = hrt_absolute_time();
+	position_controller_output.x = command.position(0);
+	position_controller_output.y = command.position(1);
+	position_controller_output.z = command.position(2);
+	position_controller_output.vx = v_sp(0);
+	position_controller_output.vy = v_sp(1);
+	position_controller_output.vz = v_sp(2);
 	position_controller_output.acceleration[0] = acc_cmd(0);
 	position_controller_output.acceleration[1] = acc_cmd(1);
 	position_controller_output.acceleration[2] = acc_cmd(2);
+	position_controller_output.thrust[0] = NAN;
+	position_controller_output.thrust[1] = NAN;
+	position_controller_output.thrust[2] = NAN;
+	position_controller_output.yaw = command.Euler_angles(2);
+	position_controller_output.yawspeed = command.angular_velocity(2);
 	_position_controller_output_pub.publish(position_controller_output);
 
 	if ((_param_print_msg_a_en.get() != 0) && ((_last_debug_print_time == 0)
@@ -1267,18 +1279,27 @@ void FullvectorControl::AttitudeControl(const UAVStates &state, UAVCommand &comm
 	}
 }
 
-void FullvectorControl::calculateMotorCommand(const UAVCommand &command)
+void FullvectorControl::calculateMotorCommand(const UAVStates &state, const UAVCommand &command)
 {
 	// 读取期望姿态角；当前电机倾转角主要使用 roll/pitch，yaw 通过公共倾转补偿参与。
 	const float phi_sp = command.Euler_angles(0);
 	const float theta_sp = command.Euler_angles(1);
 
 	// 使用前级位置环输出和姿态环输出。
-	const Vector3f &acc_sp = _pos_acc_cmd;
+	const Vector3f &acc_sp_ned = _pos_acc_cmd;
 	const Vector3f &ang_acc_sp = _att_ang_acc_cmd;
 	const float tilt_angle_max_rad = math::max(_param_fv_tilt_max.get(), 0.01f);
 	const float yaw_tilt_max_rad = math::constrain(_param_fv_yaw_tilt_max.get(), 0.0f, tilt_angle_max_rad);
 	const float yaw_motor_mix_weight = math::constrain(_param_fv_yaw_mix_wt.get(), 0.0f, 1.0f);
+
+	// 位置环输出使用 NED 世界坐标，而四个倾转舵机的几何分配定义在机体系。
+	// 先按当前航向将水平加速度旋转到 body FRD；否则飞机航向不为零时，
+	// 位置修正方向会随航向一起旋转（例如 yaw=90 deg 时 N/E 轴近似互换）。
+	const float current_yaw = Vector3f(Eulerf(state.attitude))(2);
+	const float cos_yaw = cosf(current_yaw);
+	const float sin_yaw = sinf(current_yaw);
+	const float acc_sp_body_x = cos_yaw * acc_sp_ned(0) + sin_yaw * acc_sp_ned(1);
+	const float acc_sp_body_y = -sin_yaw * acc_sp_ned(0) + cos_yaw * acc_sp_ned(1);
 
 	// 根据悬停推力估算基础电机角速度，K_F 太小时做保护。
 	const float kf_safe = math::max(K_F, 1e-6f);
@@ -1297,14 +1318,14 @@ void FullvectorControl::calculateMotorCommand(const UAVCommand &command)
 	// 根据姿态目标和水平加速度指令计算四个电机的基础倾转角偏置。
 	// 小角度下 controlAllocation() 中有 a_ned_xy = -R_nb * F_body_xy / m，
 	// 因此期望 NED 水平加速度需要生成反向机体系水平力。
-	const float alpha_base1 =  sqrtf(2.0f) * theta_sp + sqrtf(2.0f) * phi_sp - acc_to_tilt * mass_safe * (acc_sp(
-					   0) - acc_sp(1)) / 4.0f;
-	const float alpha_base2 = -sqrtf(2.0f) * theta_sp - sqrtf(2.0f) * phi_sp + acc_to_tilt * mass_safe * (acc_sp(
-					  0) - acc_sp(1)) / 4.0f;
-	const float alpha_base3 = -sqrtf(2.0f) * theta_sp + sqrtf(2.0f) * phi_sp + acc_to_tilt * mass_safe * (acc_sp(
-					  0) + acc_sp(1)) / 4.0f;
-	const float alpha_base4 =  sqrtf(2.0f) * theta_sp - sqrtf(2.0f) * phi_sp - acc_to_tilt * mass_safe * (acc_sp(
-					   0) + acc_sp(1)) / 4.0f;
+	const float alpha_base1 =  sqrtf(2.0f) * theta_sp + sqrtf(2.0f) * phi_sp
+				   - acc_to_tilt * mass_safe * (acc_sp_body_x - acc_sp_body_y) / 4.0f;
+	const float alpha_base2 = -sqrtf(2.0f) * theta_sp - sqrtf(2.0f) * phi_sp
+				   + acc_to_tilt * mass_safe * (acc_sp_body_x - acc_sp_body_y) / 4.0f;
+	const float alpha_base3 = -sqrtf(2.0f) * theta_sp + sqrtf(2.0f) * phi_sp
+				   + acc_to_tilt * mass_safe * (acc_sp_body_x + acc_sp_body_y) / 4.0f;
+	const float alpha_base4 =  sqrtf(2.0f) * theta_sp - sqrtf(2.0f) * phi_sp
+				   - acc_to_tilt * mass_safe * (acc_sp_body_x + acc_sp_body_y) / 4.0f;
 
 
 	const auto signed_sqrt = [](float value) {
@@ -1315,7 +1336,7 @@ void FullvectorControl::calculateMotorCommand(const UAVCommand &command)
 	const float w_roll = signed_sqrt((I_xx * ang_acc_sp(0)) / (4.0f * kf_safe * arm_d));
 	const float w_pitch = signed_sqrt((I_yy * ang_acc_sp(1)) / (4.0f * kf_safe * arm_d));
 	const float w_yaw = yaw_motor_mix_weight * signed_sqrt((I_zz * ang_acc_sp(2)) / (4.0f * kf_safe * distance_safe));
-	const float w_fz = signed_sqrt((mass_safe * (gravity_safe - acc_sp(2))) / (4.0f * kf_safe));
+	const float w_fz = signed_sqrt((mass_safe * (gravity_safe - acc_sp_ned(2))) / (4.0f * kf_safe));
 
 	// 将姿态角加速度和垂向加速度叠加到四个电机角速度命令。
 	// 电机编号：1=右前，2=左后，3=左前，4=右后；偏航按 1/2 与 3/4 反向差动。
@@ -1403,7 +1424,7 @@ void FullvectorControl::controlAllocation(const UAVStates &state, const UAVComma
 	(void)yaw_rad;
 
 	// 先根据控制器输出计算电机角速度和倾转角。
-	calculateMotorCommand(command);
+	calculateMotorCommand(state, command);
 
 	if (_param_print_msg_a_en.get() != 0) {
 		static hrt_abstime last_ctrl_alloc_print_time{0};
