@@ -159,6 +159,8 @@ private:
 
 	bool updateUAVState();
 	bool updateAttitudeStateOnly();
+	// 刷新两个控制模式共用的姿态、欧拉角和机体系角速度缓存。
+	void updateAttitudeAndAngularVelocity();
 
 	// 统计 Run() 单次控制循环耗时。
 	perf_counter_t _loop_perf{perf_alloc(PC_ELAPSED, MODULE_NAME": loop")};
@@ -174,6 +176,14 @@ private:
 		(ParamFloat<px4::params::FV_REL_POS_X>) _param_fv_rel_pos_x,
 		(ParamFloat<px4::params::FV_REL_POS_Y>) _param_fv_rel_pos_y,
 		(ParamFloat<px4::params::FV_REL_POS_Z>) _param_fv_rel_pos_z,
+		(ParamFloat<px4::params::FV_REL_VXY_MAX>) _param_fv_rel_vxy_max,
+		(ParamFloat<px4::params::FV_REL_AXY_MAX>) _param_fv_rel_axy_max,
+		(ParamFloat<px4::params::FV_REL_LOSS_T>) _param_fv_rel_loss_t,
+		(ParamInt<px4::params::FV_REL_ATT_MODE>) _param_fv_rel_att_mode,
+		(ParamFloat<px4::params::FV_REL_ATT_GAIN>) _param_fv_rel_att_gain,
+		(ParamFloat<px4::params::FV_REL_RATE_MAX>) _param_fv_rel_rate_max,
+		(ParamFloat<px4::params::FV_REL_ACC_MAX>) _param_fv_rel_acc_max,
+		(ParamFloat<px4::params::FV_REL_MOT_DIF>) _param_fv_rel_motor_diff,
 		(ParamFloat<px4::params::FV_REL_ROLL>) _param_fv_rel_roll,
 		(ParamFloat<px4::params::FV_REL_PITCH>) _param_fv_rel_pitch,
 		(ParamFloat<px4::params::FV_REL_YAW>) _param_fv_rel_yaw,
@@ -194,6 +204,9 @@ private:
 		(ParamFloat<px4::params::FV_VEL_I_X>)             _param_fv_vel_i_x,
 		(ParamFloat<px4::params::FV_VEL_I_Y>)             _param_fv_vel_i_y,
 		(ParamFloat<px4::params::FV_VEL_I_Z>)             _param_fv_vel_i_z,
+		(ParamFloat<px4::params::FV_PC_Z_I_SCALE>)         _param_fv_pc_z_i_scale,
+		(ParamFloat<px4::params::FV_Z_VEL_BLEND>)          _param_fv_z_vel_blend,
+		(ParamFloat<px4::params::FV_Z_INT_MAX>)            _param_fv_z_int_max,
 		(ParamFloat<px4::params::FV_VEL_D_X>)             _param_fv_vel_d_x,
 		(ParamFloat<px4::params::FV_VEL_D_Y>)             _param_fv_vel_d_y,
 		(ParamFloat<px4::params::FV_VEL_D_Z>)             _param_fv_vel_d_z,
@@ -270,6 +283,17 @@ private:
 	trajectory_setpoint_s _trajectory_setpoint{};
 	target_relative_pose_s _target_relative_pose{};
 	bool _target_relative_pose_valid{false};
+	// 每个 Run() 周期只计算一次，保证位置环和姿态环使用同一份相对位姿快照。
+	bool _relative_pose_active{false};
+	bool _relative_pose_session_active{false};
+	bool _relative_pose_loss_hold{false};
+	bool _relative_pose_just_lost{false};
+	bool _relative_pose_hold_initialized{false};
+	Quatf _relative_attitude{};
+	Vector3f _relative_euler{};
+	Dcmf _rotation_ned_target{};
+	Vector3f _relative_pose_hold_position{};
+	float _relative_pose_hold_yaw{0.0f};
 	hrt_abstime _last_target_relative_pose_update{0};
 
 	// PID 参数矩阵：行对应 X/Y/Z 或 roll/pitch/yaw，列对应 P/I/D。
@@ -335,6 +359,10 @@ private:
 	// true 表示对应 NED 轴当前有有限位置目标；用于无冲击地开关位置外环。
 	bool _position_axis_locked[3] {};
 	bool _position_outer_uses_relative_pose{false};
+	// 定点模式垂向锁定诊断：记录实际进入内环的速度反馈和积分加速度贡献。
+	bool _posctl_z_hold_active{false};
+	float _vertical_velocity_feedback{0.0f};
+	float _vertical_velocity_integral_acceleration{0.0f};
 
 	// 姿态/角速度串级 PID 的积分项和上一拍误差。
 	Vector3f _att_error_int{};
