@@ -2,33 +2,6 @@
 module_name: fullvector_control
 
 parameters:
-  - group: Demo
-    definitions:
-      PRINT_A_EN:
-        type: int32
-        default: 0
-        min: 0
-        max: 1
-        description:
-            short: 调试打印开关
-            long: |
-                控制 fullvector_control 的调试日志输出。
-                设置为 1 时周期性打印控制器状态和中间量；设置为 0 时关闭这些调试打印。
-
-      PRINT_NUM_VALUE:
-        type: float
-        default: 0.8
-        decimal: 2
-        min: 0.2
-        max: 1.0
-        unit: s
-        description:
-            short: 调试打印数值
-            long: |
-                PRINT_A_EN 启用时随调试日志打印的数值。
-                主要用于确认参数更新链路是否生效。
-
-
   - group: Fullvector Control
     definitions:
       FV_POS_P_X:
