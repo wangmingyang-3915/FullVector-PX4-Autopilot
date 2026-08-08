@@ -25,10 +25,11 @@ class TargetRelativePoseBridge(Node):
         self.declare_parameter('output_topic', '/fmu/in/target_relative_pose')
         self.declare_parameter(
             'offboard_control_mode_topic',
-            '/fmu/in/offboard_control_mode',
+            '',
         )
         self.declare_parameter('publish_rate_hz', 60.0)
         self.declare_parameter('max_pose_age_s', 0.2)
+        # Do not republish stale orientation into the fast attitude loop by default.
         self.declare_parameter('dropout_grace_s', 0.0)
 
         self._parent_frame = str(self.get_parameter('parent_frame').value)
@@ -44,6 +45,20 @@ class TargetRelativePoseBridge(Node):
         offboard_control_mode_topic = str(
             self.get_parameter('offboard_control_mode_topic').value
         )
+        if not offboard_control_mode_topic:
+            output_topic_prefix, separator, output_topic_name = (
+                output_topic.rpartition('/')
+            )
+
+            if not separator or output_topic_name != 'target_relative_pose':
+                raise ValueError(
+                    'offboard_control_mode_topic must be set when output_topic '
+                    'does not end in /target_relative_pose'
+                )
+
+            offboard_control_mode_topic = (
+                f'{output_topic_prefix}/offboard_control_mode'
+            )
         publish_rate_hz = float(self.get_parameter('publish_rate_hz').value)
         self._max_pose_age_ns = int(float(self.get_parameter('max_pose_age_s').value) * 1e9)
         self._dropout_grace_ns = int(

@@ -32,7 +32,7 @@
  ****************************************************************************/
 
 /**
- * @file fullvector_control_main.cpp
+ * @file fullvector_control.cpp
  *
  * Full-vector quadcopter controller with cascaded position/attitude PID loops
  * and direct normalized actuator output for motors and tilt servos.
@@ -48,34 +48,29 @@
 #include <lib/mathlib/mathlib.h>
 #include <lib/matrix/matrix/math.hpp>
 #include <px4_platform_common/defines.h>
-#include <geo/geo.h>
 #include <px4_platform_common/log.h>
-#include <parameters/param.h>
-#include <px4_platform_common/events.h>
 
 using namespace time_literals;
 using namespace matrix;
-
 
 FullvectorControl::FullvectorControl() :
 	ModuleParams(nullptr),
 	ScheduledWorkItem(MODULE_NAME, px4::wq_configurations::nav_and_controllers)
 {
-	// 构造时先读取一次参数，保证控制增益和机体物理参数都有初值。
+	// 初始化参数、状态和目标缓存。
 	parameters_update(true);
 
-	// 初始化内部状态缓存，后续会被 uORB 订阅到的估计器状态覆盖。
 	_current_state.position = Vector3f(0.0f, 0.0f, 0.0f);
 	_current_state.velocity = Vector3f(0.0f, 0.0f, 0.0f);
 	_current_state.Euler_angles = Vector3f(0.0f, 0.0f, 0.0f);
 	_current_state.attitude = Quatf(1.0f, 0.0f, 0.0f, 0.0f);
 	_current_state.angular_velocity = Vector3f(0.0f, 0.0f, 0.0f);
 
-	// 初始化命令缓存，实际目标点会在首次获得有效状态和后续 trajectory_setpoint 中写入。
 	_current_command.position = Vector3f(0.0f, 0.0f, 0.0f);
 	_current_command.Euler_angles = Vector3f(0.0f, 0.0f, 0.0f);
 }
 
+//模块退出时释放控制循环的性能监测计数器资源
 FullvectorControl::~FullvectorControl()
 {
 	perf_free(_loop_perf);
@@ -83,35 +78,40 @@ FullvectorControl::~FullvectorControl()
 
 bool FullvectorControl::init()
 {
-	// 调度一次 WorkQueue，之后 Run() 内部会周期性重新调度。
+	// 启动控制循环。
 	ScheduleNow();
 	return true;
 }
 
 void FullvectorControl::resetPositionPidState()
 {
-	// 清空位置/速度环积分和前一拍误差，避免模式切换或参数更新后积分残留。
+	// 重置位置和速度环状态。
 	_pos_error_int.zero();
 	_vel_error_int.zero();
 	_pid_state_initialized = false;
 
+	//解除三轴位置锁定
 	for (bool &axis_locked : _position_axis_locked) {
 		axis_locked = false;
 	}
 
+	//清除相对位姿模式记录+高度保持及垂直控制缓存
 	_position_outer_uses_relative_pose = false;
+	_posctl_z_hold_active = false;
+	_vertical_velocity_feedback = 0.0f;
+	_vertical_velocity_integral_acceleration = 0.0f;
 }
 
 void FullvectorControl::resetAttitudePidState()
 {
-	// 清空姿态/角速度环积分和前一拍误差。
+	// 重置姿态、角速度和航向目标。
 	_att_error_int.zero();
 	_ang_vel_error_int.zero();
 	_att_pid_state_initialized = false;
+
+	//清除相对姿态控制模式记录+丢弃旧航向目标
 	_attitude_outer_uses_relative_pose = false;
-	// 定点和自稳 yaw 目标都依赖进入对应模式时的当前航向。
 	_posctl_yaw_sp_initialized = false;
-	// 自稳 yaw 目标依赖进入 STAB 时的当前航向，PID 重置时一并丢弃旧目标。
 	_manual_yaw_sp_initialized = false;
 }
 
@@ -123,11 +123,12 @@ void FullvectorControl::resetPidState()
 
 void FullvectorControl::publishSafeActuatorFallback()
 {
-	// 状态不可用或严重过期时发布安全输出：前四路电机停转，其余电机通道保持 NaN。
+	// 电机停转，倾转舵机回中。
 	actuator_motors_s motor_safe{};
 	motor_safe.timestamp_sample = hrt_absolute_time();
 	motor_safe.timestamp = hrt_absolute_time();
 
+	// NaN 表示不接管其余执行器通道。
 	for (int i = 0; i < actuator_motors_s::NUM_CONTROLS; i++) {
 		motor_safe.control[i] = NAN;
 	}
@@ -138,7 +139,6 @@ void FullvectorControl::publishSafeActuatorFallback()
 	motor_safe.control[3] = 0.0f;
 	_motor_speed_pub_raw.publish(motor_safe);
 
-	// 倾转舵机回到中位，其余舵机通道保持 NaN。
 	actuator_servos_s tilt_safe{};
 	tilt_safe.timestamp_sample = hrt_absolute_time();
 	tilt_safe.timestamp = hrt_absolute_time();
@@ -157,24 +157,21 @@ void FullvectorControl::publishSafeActuatorFallback()
 
 void FullvectorControl::publishNeutralTiltServos()
 {
-	// 切回 PX4 原生控制器时，只负责让倾转舵机回中位，电机交给原生控制链路。
+	// 仅让倾转舵机回中，电机交给原生控制器。
 	actuator_servos_s tilt_neutral{};
 
-	// 刷新时间戳，表示这是一帧新的舵机中立命令。
 	tilt_neutral.timestamp_sample = hrt_absolute_time();
 	tilt_neutral.timestamp = tilt_neutral.timestamp_sample;
 
-	// 默认不控制其它舵机通道，避免覆盖非倾转机构。
+	// 前 4 路舵机设为 0.0f，其余通道保持 NaN。
 	for (int i = 0; i < actuator_servos_s::NUM_CONTROLS; i++) {
 		tilt_neutral.control[i] = NAN;
 	}
 
-	// 前 4 路是倾转舵机，0.0f 表示归一化中立位。
 	for (int i = 0; i < 4 && i < actuator_servos_s::NUM_CONTROLS; i++) {
 		tilt_neutral.control[i] = 0.0f;
 	}
 
-	// 发布中立位，并清除上一帧 fullvector 执行器缓存。
 	_motor_tilt_pub_raw.publish(tilt_neutral);
 	_last_actuator_output_valid = false;
 }
@@ -182,50 +179,61 @@ void FullvectorControl::publishNeutralTiltServos()
 void FullvectorControl::publishFullvectorControlStatus(bool fullvector_active, bool native_requested,
 		bool rc_switch_valid, float rc_switch_value)
 {
-	// 发布当前执行器输出归属，供 control_allocator 判断是否让出原生输出。
+	// 创建并初始化状态消息，发布控制权和相对位姿状态。
 	fullvector_control_status_s status{};
 
-	// 时间戳用于下游判断该状态是否新鲜。
+	// 记录当前时间戳和控制权及RC开关状态。
 	status.timestamp = hrt_absolute_time();
-
-	// true 表示本周期 fullvector 接管 actuator 输出。
 	status.fullvector_active = fullvector_active;
-
-	// true 表示遥控器请求切回 PX4 原生控制器。
 	status.native_requested = native_requested;
-
-	// true 表示本周期读到了有效的 AUX 切换通道。
 	status.rc_switch_valid = rc_switch_valid;
-
-	// 记录 AUX 实际值；无效时用 NaN 表示。
 	status.rc_switch_value = rc_switch_valid ? rc_switch_value : NAN;
+
+	//记录相对位姿控制状态及目标信息
+	status.relative_pose_valid = _target_relative_pose_valid;
+	status.relative_pose_active = _relative_pose_active;
+	status.relative_pose_loss_hold = _relative_pose_loss_hold;
+	status.relative_attitude_mode = static_cast<uint8_t>(math::constrain(_param_fv_rel_att_mode.get(),
+					int32_t{0}, int32_t{1}));
+	status.target_id = _target_relative_pose.target_id;
+	status.target_pose_timestamp_sample = _target_relative_pose.timestamp_sample;
+
+	// 计算相对位姿样本年龄。
+	if ((_target_relative_pose.timestamp_sample > 0)
+	    && (_target_relative_pose.timestamp_sample <= status.timestamp)) {
+		status.target_pose_age = status.timestamp - _target_relative_pose.timestamp_sample;
+	}
+
+	//记录定点模式下垂向保持控制诊断量
+	status.posctl_z_hold_active = _posctl_z_hold_active;
+	status.vertical_velocity_feedback = _vertical_velocity_feedback;
+	status.vertical_velocity_integral_acceleration = _vertical_velocity_integral_acceleration;
+
+	//发布状态消息
 	_fullvector_control_status_pub.publish(status);
 }
 
 bool FullvectorControl::evaluateNativeControllerRequest(float &rc_switch_value, bool &rc_switch_valid)
 {
-	// 默认状态：没有有效拨杆值，也不请求切回原生控制器。
+	// 读取 AUX 拨杆并判断原生控制器请求。
 	rc_switch_value = NAN;
 	rc_switch_valid = false;
 
-	// 参数关闭时，不启用遥控切换。
+	// 未启用或手动输入无效时保持 fullvector 控制权。
 	if (!_param_fv_rc_sw_en.get()) {
 		return false;
 	}
 
-	// 读取最新手动控制输入。
 	_manual_control_setpoint_sub.update(&_manual_control_setpoint);
 
-	// 手动输入无效时，不根据 AUX 做切换判断。
 	if (!_manual_control_setpoint.valid) {
 		return false;
 	}
 
-	// 将参数里的 1~6 通道号映射到 aux1~aux6。
 	const int channel = math::constrain(_param_fv_rc_sw_ch.get(), int32_t{1}, int32_t{6});
 	float value = NAN;
 
-	// 按配置读取指定 AUX 通道值。
+	// 将参数通道号映射到 AUX1～AUX6。
 	switch (channel) {
 	case 1: value = _manual_control_setpoint.aux1; break;
 
@@ -242,29 +250,27 @@ bool FullvectorControl::evaluateNativeControllerRequest(float &rc_switch_value, 
 	default: break;
 	}
 
-	// AUX 未映射或无效时，不触发切换。
 	if (!PX4_ISFINITE(value)) {
 		return false;
 	}
 
-	// 约束到标准拨杆范围，并标记通道有效。
 	rc_switch_value = math::constrain(value, -1.0f, 1.0f);
 	rc_switch_valid = true;
 
-	// 按阈值判断是否请求 PX4 原生控制器。
 	const bool high_position = rc_switch_value > _param_fv_rc_sw_thr.get();
 
-	// 反向参数用于适配遥控器拨杆方向。
+	// 反向参数用于适配不同的拨杆方向。
 	return _param_fv_rc_sw_rev.get() ? !high_position : high_position;
 }
 
 bool FullvectorControl::publishLastActuatorCommand()
 {
+	//检查上一拍输出是否有效
 	if (!_last_actuator_output_valid) {
 		return false;
 	}
 
-	// 重发上一拍输出时刷新时间戳，避免下游认为 actuator 消息本身已经过期。
+	// 刷新时间戳并重发上一拍输出。
 	const hrt_abstime now = hrt_absolute_time();
 	_last_motor_output.timestamp_sample = now;
 	_last_motor_output.timestamp = now;
@@ -278,16 +284,14 @@ bool FullvectorControl::publishLastActuatorCommand()
 
 void FullvectorControl::parameters_update(bool force)
 {
-	// 检查参数是否更新；force=true 时用于构造阶段强制刷新一次。
+	// 同步参数并重置 PID 历史。
 	if (_parameter_update_sub.updated() || force) {
-		// 读取并清除 parameter_update 通知。
 		parameter_update_s pupdate;
 		_parameter_update_sub.copy(&pupdate);
 
-		// 从 PX4 参数系统同步最新参数值到 ModuleParams 缓存。
 		ModuleParams::updateParams();
 
-		// 位置外环 PID 增益矩阵：行对应 x/y/z，列对应 P/I/D。
+		// 位置外环：位置误差到期望速度。
 		gain_pos_pid.setZero();
 		gain_pos_pid(0, 0) = _param_fv_pos_p_x.get();
 		gain_pos_pid(0, 1) = _param_fv_pos_i_x.get();
@@ -299,7 +303,7 @@ void FullvectorControl::parameters_update(bool force)
 		gain_pos_pid(2, 1) = _param_fv_pos_i_z.get();
 		gain_pos_pid(2, 2) = _param_fv_pos_d_z.get();
 
-		// 速度内环 PID 增益矩阵。
+		// 速度内环：速度误差到期望加速度。
 		gain_vel_pid.setZero();
 		gain_vel_pid(0, 0) = _param_fv_vel_p_x.get();
 		gain_vel_pid(0, 1) = _param_fv_vel_i_x.get();
@@ -311,7 +315,7 @@ void FullvectorControl::parameters_update(bool force)
 		gain_vel_pid(2, 1) = _param_fv_vel_i_z.get();
 		gain_vel_pid(2, 2) = _param_fv_vel_d_z.get();
 
-		// 姿态外环 PID 增益矩阵。
+		// 姿态外环：欧拉角误差到期望角速度。
 		gain_att_pid.setZero();
 		gain_att_pid(0, 0) = _param_fv_att_p_x.get();
 		gain_att_pid(0, 1) = _param_fv_att_i_x.get();
@@ -323,7 +327,7 @@ void FullvectorControl::parameters_update(bool force)
 		gain_att_pid(2, 1) = _param_fv_att_i_z.get();
 		gain_att_pid(2, 2) = _param_fv_att_d_z.get();
 
-		// 角速度内环 PID 增益矩阵。
+		// 角速度内环：角速度误差到期望角加速度。
 		gain_ang_vel_pid.setZero();
 		gain_ang_vel_pid(0, 0) = _param_fv_ang_vel_p_x.get();
 		gain_ang_vel_pid(0, 1) = _param_fv_ang_vel_i_x.get();
@@ -335,14 +339,14 @@ void FullvectorControl::parameters_update(bool force)
 		gain_ang_vel_pid(2, 1) = _param_fv_ang_vel_i_z.get();
 		gain_ang_vel_pid(2, 2) = _param_fv_ang_vel_d_z.get();
 
-		// 机体物理参数，用于执行器分配、推力/力矩估算和调试动力学积分。
+		// 更新飞行器物理参数。
 		mass = _param_fv_mass.get();
 		gravity = _param_fv_gravity.get();
 		distance = _param_fv_motor_distance.get();
 		K_F = _param_fv_K_F.get();
 		K_M = _param_fv_K_M.get();
 
-		// 惯量矩阵当前只使用对角项 Ixx/Iyy/Izz。
+		// 更新惯性矩阵。
 		inertia.setZero();
 		inertia(0, 0) = _param_fv_inertia_xx.get();
 		inertia(1, 1) = _param_fv_inertia_yy.get();
@@ -350,7 +354,7 @@ void FullvectorControl::parameters_update(bool force)
 
 		J_RP = _param_fv_J_RP.get();
 
-		// 参数改变后重置 PID 状态，避免旧积分项和新增益混用。
+		// 重置 PID 历史状态。
 		resetPidState();
 	}
 }
@@ -361,7 +365,7 @@ bool FullvectorControl::updateUAVState()
 	_position_state_age_level = 0;
 	_attitude_state_age_level = 0;
 
-	// 读取本地位置和速度估计，仅在有效标志为真时更新内部状态。
+	// 更新位置和速度。
 	if (_vehicle_local_position_sub.updated()) {
 		_vehicle_local_position_sub.copy(&_position);
 
@@ -376,37 +380,22 @@ bool FullvectorControl::updateUAVState()
 		}
 	}
 
-	// 读取姿态四元数。
-	if (_vehicle_attitude_sub.updated()) {
-		_vehicle_attitude_sub.copy(&_attitude);
-		_current_state.attitude = matrix::Quatf(_attitude.q);
-		_last_attitude_update = _attitude.timestamp;
-	}
+	updateAttitudeAndAngularVelocity();
 
-	// 读取机体系角速度。
-	if (_vehicle_angular_velocity_sub.updated()) {
-		_vehicle_angular_velocity_sub.copy(&_angular_velocity);
-		_current_state.angular_velocity = Vector3f(_angular_velocity.xyz[0],
-						  _angular_velocity.xyz[1],
-						  _angular_velocity.xyz[2]);
-		_last_angular_velocity_update = _angular_velocity.timestamp;
-	}
-
-	// 姿态闭环必须依赖姿态和角速度；位置/速度缺失时后续退化为姿态保持。
+	// 姿态和角速度是最小闭环状态。
 	if ((_last_attitude_update == 0) || (_last_angular_velocity_update == 0)) {
 		return false;
 	}
 
-	// 位置/速度可能在 GPS 拒止或估计器切换时失效，但姿态闭环仍可继续工作。
+	// 位置和速度是可选闭环状态，缺失时仅使用姿态环。
 	const bool position_available = (_last_position_update != 0) && (_last_velocity_update != 0);
 	const hrt_abstime elapsed_attitude = hrt_elapsed_time(&_last_attitude_update);
 	const hrt_abstime elapsed_ang_vel = hrt_elapsed_time(&_last_angular_velocity_update);
 
-	// 区分“偏旧告警”“短时保持”和“严重过期失效保护”。
+	// 按消息年龄划分告警、保持和失效等级。
 	constexpr hrt_abstime stale_warn_timeout = 200_ms;
 	constexpr hrt_abstime stale_hold_timeout = 500_ms;
 	constexpr hrt_abstime stale_fail_timeout = 1500_ms;
-	// 如果位置/速度从未可用，直接按严重过期处理，后续跳过位置环而不是停姿态环。
 	const hrt_abstime elapsed_position = position_available ? hrt_elapsed_time(&_last_position_update) :
 					     (stale_fail_timeout + 1);
 	const hrt_abstime elapsed_velocity = position_available ? hrt_elapsed_time(&_last_velocity_update) :
@@ -422,7 +411,7 @@ bool FullvectorControl::updateUAVState()
 	if (aging) {
 		static hrt_abstime last_stale_warn{0};
 
-		// 限频打印状态老化告警，避免刷屏。
+		// 限频报告状态老化。
 		if ((last_stale_warn == 0) || (hrt_elapsed_time(&last_stale_warn) > 1_s)) {
 			PX4_WARN("state aging: pos=%llu vel=%llu att=%llu ang=%llu us",
 				 (unsigned long long)elapsed_position,
@@ -433,7 +422,7 @@ bool FullvectorControl::updateUAVState()
 		}
 	}
 
-	// 分别记录位置类和姿态类状态等级，Run() 中按不同风险采取不同降级策略。
+	// 分开记录位置和姿态等级，支持独立降级。
 	_position_state_age_level = position_fail ? 3 : (position_stale ? 2 : (position_aging ? 1 : 0));
 	_attitude_state_age_level = attitude_fail ? 3 : (attitude_stale ? 2 : (attitude_aging ? 1 : 0));
 	_state_age_level = (_position_state_age_level > _attitude_state_age_level) ? _position_state_age_level :
@@ -442,33 +431,21 @@ bool FullvectorControl::updateUAVState()
 	return true;
 }
 
+//STAB（姿态稳定）模式状态更新函数
 bool FullvectorControl::updateAttitudeStateOnly()
 {
 	_state_age_level = 0;
 	_position_state_age_level = 0;
 	_attitude_state_age_level = 0;
 
-	// 自稳接管不需要位置/速度闭环，因此只刷新姿态四元数和机体系角速度。
-	if (_vehicle_attitude_sub.updated()) {
-		_vehicle_attitude_sub.copy(&_attitude);
-		_current_state.attitude = matrix::Quatf(_attitude.q);
-		_last_attitude_update = _attitude.timestamp;
-	}
+	// 更新姿态和角速度。
+	updateAttitudeAndAngularVelocity();
 
-	if (_vehicle_angular_velocity_sub.updated()) {
-		_vehicle_angular_velocity_sub.copy(&_angular_velocity);
-		_current_state.angular_velocity = Vector3f(_angular_velocity.xyz[0],
-						  _angular_velocity.xyz[1],
-						  _angular_velocity.xyz[2]);
-		_last_angular_velocity_update = _angular_velocity.timestamp;
-	}
-
-	// 两个姿态相关状态至少各收到过一次，才允许进入自稳 fullvector 控制。
 	if ((_last_attitude_update == 0) || (_last_angular_velocity_update == 0)) {
 		return false;
 	}
 
-	// 使用和完整状态检查一致的老化策略，但只检查姿态和角速度。
+	// 复用完整状态检查的老化阈值。
 	const hrt_abstime elapsed_attitude = hrt_elapsed_time(&_last_attitude_update);
 	const hrt_abstime elapsed_ang_vel = hrt_elapsed_time(&_last_angular_velocity_update);
 	constexpr hrt_abstime stale_warn_timeout = 200_ms;
@@ -481,6 +458,7 @@ bool FullvectorControl::updateAttitudeStateOnly()
 	if (aging) {
 		static hrt_abstime last_stale_warn{0};
 
+		// 限频报告姿态状态老化。
 		if ((last_stale_warn == 0) || (hrt_elapsed_time(&last_stale_warn) > 1_s)) {
 			PX4_WARN("attitude state aging: att=%llu ang=%llu us",
 				 (unsigned long long)elapsed_attitude,
@@ -495,31 +473,72 @@ bool FullvectorControl::updateAttitudeStateOnly()
 	return true;
 }
 
+void FullvectorControl::updateAttitudeAndAngularVelocity()
+{
+	// 更新姿态消息并将姿态四元数转换为欧拉角。
+	if (_vehicle_attitude_sub.updated()) {
+		_vehicle_attitude_sub.copy(&_attitude);
+		_current_state.attitude = Quatf(_attitude.q);
+		_current_state.Euler_angles = Vector3f(Eulerf(_current_state.attitude));
+		_last_attitude_update = _attitude.timestamp;
+	}
+
+	// 更新角速度消息（机体 FRD 坐标系）。
+	if (_vehicle_angular_velocity_sub.updated()) {
+		_vehicle_angular_velocity_sub.copy(&_angular_velocity);
+		_current_state.angular_velocity = Vector3f(_angular_velocity.xyz[0],
+						  _angular_velocity.xyz[1],
+						  _angular_velocity.xyz[2]);
+		_last_angular_velocity_update = _angular_velocity.timestamp;
+	}
+}
+
+bool FullvectorControl::shouldLogFaultWarning(hrt_abstime now)
+{
+	constexpr hrt_abstime warning_interval = 1_s;
+
+	if ((_last_fault_warning_time == 0) || ((now - _last_fault_warning_time) > warning_interval)) {
+		_last_fault_warning_time = now;
+		return true;
+	}
+
+	return false;
+}
 
 void FullvectorControl::Run()
 {
-	// 模块退出处理：停止调度并释放模块实例。
+	// 响应模块退出请求。
 	if (should_exit()) {
 		ScheduleClear();
 		exit_and_cleanup();
 		return;
 	}
 
-	// 控制器按 5 ms 周期运行，即使本周期没有输出也保持调度。
+	// 以 5 ms 周期调度控制循环。
 	ScheduleDelayed(5_ms);
 
 	parameters_update(false);
 
-	// 读取飞控当前控制模式、导航状态和上层轨迹目标，用于判断是否允许本控制器输出。
+	// 更新模式和轨迹输入。
 	_vehicle_control_mode_sub.update(&_control_mode);
 	_vehicle_status_sub.update(&_vehicle_status);
 	_trajectory_setpoint_sub.update(&_trajectory_setpoint);
 
-	// 接收本机相对目标机 body FRD 的 6DoF 位姿。这里只做输入缓存和有效性门控，
-	// 在控制律显式使用该数据之前不改变任何执行器输出。
+	// 相对位姿有效性检查。
+	const hrt_abstime relative_pose_timeout = static_cast<hrt_abstime>(
+				math::max(_param_fv_rel_loss_t.get(), 0.05f) * 1_s);
+
 	if (_target_relative_pose_sub.update(&_target_relative_pose)) {
 		_last_target_relative_pose_update = hrt_absolute_time();
 
+		// 样本时间戳必须有效且未超过配置超时。
+		const bool sample_timestamp_valid = (_target_relative_pose.timestamp_sample > 0)
+						    && (_target_relative_pose.timestamp_sample <= _last_target_relative_pose_update);
+		const bool sample_fresh = sample_timestamp_valid
+					  && ((_last_target_relative_pose_update - _target_relative_pose.timestamp_sample)
+					      <= relative_pose_timeout);
+
+		// 位置必须有限，四元数必须接近单位模长。
 		const bool position_finite = PX4_ISFINITE(_target_relative_pose.position[0])
 					     && PX4_ISFINITE(_target_relative_pose.position[1])
 					     && PX4_ISFINITE(_target_relative_pose.position[2]);
@@ -535,49 +554,64 @@ void FullvectorControl::Run()
 
 		_target_relative_pose_valid = _target_relative_pose.position_valid
 					      && _target_relative_pose.orientation_valid
+					      && sample_fresh
 					      && position_finite
 					      && quaternion_normalized;
 	}
 
+	// 接收端长时间无更新时强制使相对位姿失效。
 	if ((_last_target_relative_pose_update == 0)
-	    || (hrt_elapsed_time(&_last_target_relative_pose_update) > 200_ms)) {
+	    || (hrt_elapsed_time(&_last_target_relative_pose_update) > relative_pose_timeout)) {
 		_target_relative_pose_valid = false;
 	}
 
 	float rc_switch_value = NAN;
 	bool rc_switch_valid = false;
-	// 先读取遥控器切换请求，确保本周期输出前完成仲裁。
+	// 在输出前完成控制权仲裁。
 	const bool native_requested = evaluateNativeControllerRequest(rc_switch_value, rc_switch_valid);
 
+	// 汇总参数、解锁状态和飞行模式门控。
 	const bool fv_enabled = (_param_fv_enable.get() == 1);
 	const bool armed = _control_mode.flag_armed;
 	const bool posctl_mode = (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_POSCTL);
 	const bool offboard_mode = (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_OFFBOARD);
-	// 自稳模式下由手动摇杆直接生成 fullvector 姿态/油门目标。
+	// 固定本周期的相对位姿状态快照。
+	const bool relative_pose_was_active = _relative_pose_active;
+	_relative_pose_active = offboard_mode && _target_relative_pose_valid;
+	_relative_pose_just_lost = offboard_mode && relative_pose_was_active && !_relative_pose_active;
+
+	// 记录相对位姿会话以触发失联保持。
+	if (!offboard_mode) {
+		_relative_pose_session_active = false;
+		_relative_pose_hold_initialized = false;
+
+	} else if (_relative_pose_active) {
+		_relative_pose_session_active = true;
+	}
+
+	if (_relative_pose_just_lost) {
+		_relative_pose_hold_initialized = false;
+	}
+
+	_relative_pose_loss_hold = offboard_mode && _relative_pose_session_active && !_relative_pose_active;
 	const bool stabilized_mode = (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_STAB);
-	// 终止模式下必须停止本控制器输出，避免和 PX4 失效终止逻辑冲突。
 	const bool termination_mode = _control_mode.flag_control_termination_enabled
 				      || (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_TERMINATION);
-	// 状态估计是否可用由状态更新函数判断；是否进入 fullvector 闭环由飞行模式显式门控。
 	const bool fullvector_mode_allowed = posctl_mode || offboard_mode || stabilized_mode;
-	// 模块基础门控：参数启用、已解锁、未进入终止模式。
 	const bool module_active = fv_enabled && armed && !termination_mode;
-	// 本周期是否真正接管执行器输出。
 	const bool fullvector_active = module_active && fullvector_mode_allowed && !native_requested;
 
+	// 离开模式时丢弃对应航向目标。
 	if (!posctl_mode) {
-		// 离开定点模式后丢弃航向锁定目标，下次进入时重新捕获当前航向。
 		_posctl_yaw_sp_initialized = false;
 	}
 
 	if (!stabilized_mode) {
-		// 离开自稳后不保留手动 yaw 目标，避免下次进入 STAB 时带入旧航向。
 		_manual_yaw_sp_initialized = false;
 	}
 
+	// 未激活时释放控制权并清除历史状态。
 	if (!module_active) {
-		// 模块未启用、未解锁或终止模式时，不发布控制输出。
-		// 控制器失活时清空 PID 状态，下一次激活从干净状态开始。
 		if (_controller_was_active) {
 			resetPidState();
 			_last_run_time = 0;
@@ -586,13 +620,12 @@ void FullvectorControl::Run()
 		_controller_was_active = false;
 		_command_initialized = false;
 		_last_actuator_output_valid = false;
-		// 发布未接管状态，让 control_allocator 恢复原生输出。
 		publishFullvectorControlStatus(false, native_requested, rc_switch_valid, rc_switch_value);
 		return;
 	}
 
+	// 非支持模式下保持静默。
 	if (!fullvector_mode_allowed) {
-		// 非 fullvector 闭环模式下完全静默，让 PX4 原生控制器独占输出。
 		if (_controller_was_active) {
 			resetPidState();
 			_last_run_time = 0;
@@ -601,41 +634,32 @@ void FullvectorControl::Run()
 		_controller_was_active = false;
 		_command_initialized = false;
 		_last_actuator_output_valid = false;
-		// 飞行模式不允许 fullvector 接管，声明 fullvector_active=false。
 		publishFullvectorControlStatus(false, native_requested, rc_switch_valid, rc_switch_value);
 		return;
 	}
 
+	// RC 切换时舵机回中并交还控制权。
 	if (native_requested) {
-		// 遥控器请求原生控制器，本周期不再执行 fullvector 闭环。
 		if (_controller_was_active) {
-			// 清空控制器历史状态，避免下次切回时带入旧误差。
 			resetPidState();
 			_last_run_time = 0;
 		}
 
-		// 切换瞬间先让倾转舵机回中位。
 		publishNeutralTiltServos();
-		// 标记 fullvector 已退出接管。
 		_controller_was_active = false;
 		_command_initialized = false;
 		_last_actuator_output_valid = false;
-		// 通知 control_allocator 恢复 PX4 原生输出。
 		publishFullvectorControlStatus(false, true, rc_switch_valid, rc_switch_value);
 		return;
 	}
 
-	// fullvector 接管时发布 active 状态，让 control_allocator 让出 actuator 输出。
+	// 声明 fullvector 接管执行器。
 	publishFullvectorControlStatus(fullvector_active, false, rc_switch_valid, rc_switch_value);
 
 	const hrt_abstime now = hrt_absolute_time();
 
-	const bool debug_print_enabled = (_param_print_msg_a_en.get() != 0);
-	const bool allow_debug_print = debug_print_enabled
-				       && ((_last_debug_print_time == 0) || (hrt_elapsed_time(&_last_debug_print_time) > 200_ms));
-
+	// 激活沿从干净状态启动。
 	if (!_controller_was_active) {
-		// 从未激活到激活的上升沿，重置时间和积分项。
 		resetPidState();
 		_last_run_time = 0;
 		_command_initialized = false;
@@ -643,7 +667,7 @@ void FullvectorControl::Run()
 
 	_controller_was_active = true;
 
-	// 计算本次控制周期 dt，首次运行时使用名义 5 ms。
+	// 计算并约束控制周期。
 	if (_last_run_time == 0) {
 		_dt = 0.005f;
 
@@ -657,10 +681,10 @@ void FullvectorControl::Run()
 		return;
 	}
 
-	// 防止调度抖动导致微分项异常放大。
 	constexpr float dt_clamp_s = 0.05f;
 	constexpr float dt_reset_s = 0.1f;
 
+	// 长周期重置 PID，中等抖动只限制 dt。
 	if (_dt > dt_reset_s) {
 		resetPidState();
 		_dt = 0.01f;
@@ -669,39 +693,38 @@ void FullvectorControl::Run()
 		_dt = dt_clamp_s;
 	}
 
-	// 自稳 fullvector 只依赖姿态和角速度；定点/Offboard 仍要求完整本地位置状态。
+	// 状态数据失效保护。
 	const bool state_valid = stabilized_mode ? updateAttitudeStateOnly() : updateUAVState();
 
+	// 缺少最小闭环状态时发布安全输出。
 	if (!state_valid) {
 		publishSafeActuatorFallback();
 		resetPidState();
 		_last_run_time = 0;
 		_command_initialized = false;
 
-		if (allow_debug_print) {
+		if (shouldLogFaultWarning(now)) {
 			PX4_WARN("state unavailable, publishing safe actuator fallback");
-			_last_debug_print_time = now;
 		}
 
 		return;
 	}
 
-	// 姿态或角速度严重过期时进入失效保护，不继续计算控制输出。
+	// 姿态严重过期时进入失效保护。
 	if (_attitude_state_age_level >= 3) {
 		publishSafeActuatorFallback();
 		resetPidState();
 		_last_run_time = 0;
 		_command_initialized = false;
 
-		if (allow_debug_print) {
+		if (shouldLogFaultWarning(now)) {
 			PX4_WARN("attitude stale-fail, publishing safe actuator fallback");
-			_last_debug_print_time = now;
 		}
 
 		return;
 	}
 
-	// 姿态或角速度短时掉帧时冻结 PID，并重发上一拍输出，避免 500 ms 抖动导致瞬时停桨。
+	// 姿态短时过期时保持上一拍输出。
 	if (_attitude_state_age_level >= 2) {
 		if (!publishLastActuatorCommand()) {
 			publishSafeActuatorFallback();
@@ -710,35 +733,59 @@ void FullvectorControl::Run()
 		resetPidState();
 		_last_run_time = 0;
 
-		if (allow_debug_print) {
+		if (shouldLogFaultWarning(now)) {
 			PX4_WARN("attitude stale, holding last actuator command");
-			_last_debug_print_time = now;
 		}
 
 		return;
 	}
 
-	// 使用估计器状态作为控制输入。
 	const UAVStates &state_for_control = _current_state;
 
+	// 相对位姿控制和失联保持。
+	if (_relative_pose_active) {
+		_relative_attitude = Quatf(_target_relative_pose.q).normalized();
+		_relative_euler = Vector3f(Eulerf(_relative_attitude));
+		// 将目标机 FRD 中的相对位置误差旋转到 NED。
+		_rotation_ned_target = Dcmf(state_for_control.attitude) * Dcmf(_relative_attitude).T();
+	}
+
+	// 首次接管时对齐当前状态，避免目标阶跃。
 	if (!_command_initialized) {
-		// 第一次收到有效状态后，将位置和姿态目标对齐到当前飞机状态，避免模式切换时目标阶跃。
 		_current_command.position = _current_state.position;
 		_current_command.velocity.zero();
 		_current_command.acceleration.zero();
-		_current_command.Euler_angles = Vector3f(Eulerf(_current_state.attitude));
+		_current_command.Euler_angles = _current_state.Euler_angles;
 		_current_command.angular_velocity.zero();
 		_command_initialized = true;
 	}
 
-	// 自稳模式不使用 trajectory_setpoint，避免和手动摇杆目标混用。
-	const bool trajectory_valid = !stabilized_mode
+	// 相对目标丢失时锁定当前位置和航向。
+	if (_relative_pose_loss_hold && !_relative_pose_hold_initialized) {
+		_relative_pose_hold_position = state_for_control.position;
+		_relative_pose_hold_yaw = state_for_control.Euler_angles(2);
+		// 清除相对控制残留，避免保持目标切换冲击。
+		resetPidState();
+		_relative_pose_hold_initialized = true;
+	}
+
+	// 持续输出相对目标丢失时的锁定目标。
+	if (_relative_pose_loss_hold) {
+		_current_command.position = _relative_pose_hold_position;
+		_current_command.velocity.zero();
+		_current_command.acceleration.zero();
+		_current_command.Euler_angles = Vector3f(0.0f, 0.0f, _relative_pose_hold_yaw);
+		_current_command.angular_velocity.zero();
+	}
+
+	// STAB、失联保持或超过 500 ms 的轨迹目标不参与控制。
+	const bool trajectory_valid = !stabilized_mode && !_relative_pose_loss_hold
 				      && (_trajectory_setpoint.timestamp != 0)
 				      && (hrt_elapsed_time(&_trajectory_setpoint.timestamp) < 500_ms);
 
-	const float current_yaw = Vector3f(Eulerf(_current_state.attitude))(2);
+	const float current_yaw = _current_state.Euler_angles(2);
 
-	// 定点模式进入时捕获当前航向。roll/pitch 姿态仍固定为零，yaw 则允许遥控器控制。
+	// 进入 POSCTL 时捕获当前航向。
 	if (posctl_mode && !_posctl_yaw_sp_initialized) {
 		_posctl_yaw_sp = current_yaw;
 		_posctl_yaw_sp_initialized = true;
@@ -748,10 +795,9 @@ void FullvectorControl::Run()
 	bool posctl_yaw_rate_active = false;
 	_current_command.angular_velocity.zero();
 
+	// 将轨迹目标写入内部命令。
 	if (trajectory_valid) {
-		// POSCTL: FlightModeManager 会把遥控器输入转换成 trajectory_setpoint。
-		// OFFBOARD: trajectory_setpoint 通常来自外部控制端。
-		// POSCTL 中位置 NaN 表示该轴解除位置锁定；其他模式继续保留最后一个有限位置目标。
+		// POSCTL 保留 NaN 以按轴解锁位置环。
 		for (int i = 0; i < 3; i++) {
 			if (posctl_mode) {
 				_current_command.position(i) = _trajectory_setpoint.position[i];
@@ -767,18 +813,18 @@ void FullvectorControl::Run()
 							   _trajectory_setpoint.acceleration[i] : 0.0f;
 		}
 
+		// POSCTL 在 yaw 角速度与航向保持之间切换。
 		if (posctl_mode) {
 			const float yaw_rate_sp = PX4_ISFINITE(_trajectory_setpoint.yawspeed) ?
 						  _trajectory_setpoint.yawspeed : 0.0f;
 			posctl_yaw_rate_active = fabsf(yaw_rate_sp) > FLT_EPSILON;
 
+			// yaw 杆活动时使用角速度控制。
 			if (posctl_yaw_rate_active) {
-				// 打 yaw 杆时以角速度控制转向，并让角度目标跟随当前航向，避免航向环反向拉回。
 				_posctl_yaw_sp = current_yaw;
 				_current_command.angular_velocity(2) = yaw_rate_sp;
 
 			} else if (PX4_ISFINITE(_trajectory_setpoint.yaw)) {
-				// 松杆后 FlightModeManager 锁定释放时的航向，本模块随后持续保持该目标。
 				_posctl_yaw_sp = matrix::wrap_pi(_trajectory_setpoint.yaw);
 			}
 
@@ -789,23 +835,22 @@ void FullvectorControl::Run()
 		}
 	}
 
-	// fullvector 平移主要依靠电机倾转实现：定点模式 roll/pitch 固定为零，yaw 保持且可由摇杆控制；
-	// 非定点模式姿态目标保持水平，yaw 默认保持切入时航向。
-	// 对姿态目标做限速，避免从自稳切到定点时产生姿态/航向阶跃。
+	// 平移由电机倾转完成，机体姿态目标保持水平。
 	Vector3f attitude_sp_target = _current_command.Euler_angles;
 	attitude_sp_target(0) = 0.0f;
 	attitude_sp_target(1) = 0.0f;
 	attitude_sp_target(2) = yaw_sp_target;
 
 	if (stabilized_mode) {
+		// 从摇杆生成 STAB 姿态和加速度目标。
 		_manual_control_setpoint_sub.update(&_manual_control_setpoint);
 
-		// 第一版自稳 fullvector 采用保守限幅：最大姿态约 30 度，偏航摇杆积分成航向目标。
+		// STAB 模式下的摇杆输入约束。
 		constexpr float max_manual_tilt_rad = 0.52f; // about 30 deg
 		constexpr float max_manual_yaw_rate = 2.0f; // rad/s
 		constexpr float max_manual_xy_accel = 2.0f; // m/s^2
 
-		// 手动输入可能为 NaN：PX4 的 RC 油门和姿态/偏航通道都是 [-1, 1]。
+		// 无效摇杆使用安全默认值。
 		const float roll_stick = PX4_ISFINITE(_manual_control_setpoint.roll) ?
 					 math::constrain(_manual_control_setpoint.roll, -1.0f, 1.0f) : 0.0f;
 		const float pitch_stick = PX4_ISFINITE(_manual_control_setpoint.pitch) ?
@@ -817,7 +862,7 @@ void FullvectorControl::Run()
 		const float throttle = (throttle_stick + 1.0f) * 0.5f;
 		const float hover_throttle = math::constrain(_param_fv_hover_thr.get(), 0.05f, 0.95f);
 
-		// 油门杆到底时不进入悬停基线计算，保持电机在最小 PWM。
+		// 低油门直接进入安全输出。
 		constexpr float manual_throttle_idle_threshold = 0.02f;
 
 		if (throttle <= manual_throttle_idle_threshold) {
@@ -828,12 +873,13 @@ void FullvectorControl::Run()
 			return;
 		}
 
-		// roll 右杆为正；pitch 前推为正，但 PX4/NED 中机头下压对应负 pitch，因此取负号。
+		// 按 PX4 符号约定生成 roll/pitch 目标。
 		attitude_sp_target(0) = roll_stick * max_manual_tilt_rad;
 		attitude_sp_target(1) = -pitch_stick * max_manual_tilt_rad;
-		// 自稳模式下 yaw 杆积分成航向目标；松杆时捕获当前航向，让 yaw 公共倾转尽快释放。
+
+		// 积分 yaw 杆并限制航向误差。
 		constexpr float manual_yaw_deadband = 0.03f;
-		constexpr float max_manual_yaw_error = 0.6f; // rad，限制目标航向追不上的积分堆积。
+		constexpr float max_manual_yaw_error = 0.6f; // rad
 		const bool yaw_stick_active = fabsf(yaw_stick) > manual_yaw_deadband;
 		const float yaw_rate_cmd = yaw_stick_active ? yaw_stick * max_manual_yaw_rate : 0.0f;
 
@@ -846,7 +892,7 @@ void FullvectorControl::Run()
 			_manual_yaw_sp = matrix::wrap_pi(_manual_yaw_sp + yaw_rate_cmd * _dt);
 
 		} else {
-			// 松开 yaw 杆后不继续追旧航向目标，避免地面/低响应状态下舵机长期保持 yaw 倾转。
+			// 松杆时释放旧航向和积分残留。
 			_manual_yaw_sp = current_yaw;
 			_att_error_int(2) = 0.0f;
 			_att_error_prev(2) = 0.0f;
@@ -857,7 +903,6 @@ void FullvectorControl::Run()
 		const float yaw_error_from_current = matrix::wrap_pi(_manual_yaw_sp - current_yaw);
 
 		if (fabsf(yaw_error_from_current) > max_manual_yaw_error) {
-			// 飞机实际航向跟不上目标时，只保留有限 yaw 误差，防止后续一次性打出大差动。
 			_manual_yaw_sp = matrix::wrap_pi(current_yaw
 							 + math::constrain(yaw_error_from_current,
 									 -max_manual_yaw_error,
@@ -865,28 +910,27 @@ void FullvectorControl::Run()
 		}
 
 		attitude_sp_target(2) = _manual_yaw_sp;
-		// yaw 杆同时作为角速度前馈，避免只靠航向误差闭环导致打杆响应过软。
 		_current_command.angular_velocity(2) = yaw_rate_cmd;
 
-		// 自稳模式跳过位置闭环，但仍生成等效位置环加速度输出：
-		// pitch/roll 摇杆给水平 NED 加速度，油门给垂向 NED 加速度。
+		// 将机体系摇杆加速度转换到 NED。
 		_current_command.position = _current_state.position;
 		_current_command.velocity.zero();
 		_current_command.acceleration.zero();
 		_pos_acc_cmd.zero();
 		const float forward_accel = pitch_stick * max_manual_xy_accel;
 		const float right_accel = roll_stick * max_manual_xy_accel;
-		// 将机头前向/右向的手动加速度指令按当前航向旋转到 NED x/y。
 		_pos_acc_cmd(0) = cosf(current_yaw) * forward_accel - sinf(current_yaw) * right_accel;
 		_pos_acc_cmd(1) = sinf(current_yaw) * forward_accel + cosf(current_yaw) * right_accel;
-		// NED z 轴向下为正。手动自稳模式下让油门杆直接决定集体归一化推力：
-		// calculateMotorCommand() 中 norm = hover * (g - acc_z) / g，因此这里反算 acc_z。
+
+		// 反算 NED 垂向加速度以匹配归一化油门。
 		_pos_acc_cmd(2) = gravity * (1.0f - throttle / hover_throttle);
 	}
 
+	// 限制姿态目标变化率。
 	constexpr float attitude_sp_slew_rate = 1.0f; // rad/s
 	const float attitude_sp_step = attitude_sp_slew_rate * _dt;
 
+	// STAB yaw 和 POSCTL yaw rate 绕过姿态限速。
 	for (int i = 0; i < 3; i++) {
 		if (stabilized_mode && (i == 2)) {
 			_current_command.Euler_angles(i) = attitude_sp_target(i);
@@ -894,7 +938,6 @@ void FullvectorControl::Run()
 		}
 
 		if (posctl_mode && (i == 2) && posctl_yaw_rate_active) {
-			// 角速度控制期间同步当前航向，避免姿态目标限速器产生反向航向误差。
 			_current_command.Euler_angles(i) = current_yaw;
 			continue;
 		}
@@ -906,67 +949,18 @@ void FullvectorControl::Run()
 
 	perf_begin(_loop_perf);
 
-	if (allow_debug_print) {
-		PX4_INFO("debug value=%.3f", (double)_param_print_num_value.get());
-	}
-
-	// 读取 PX4 标准推力设定值，仅用于调试打印，不参与本控制器输出。
-	vehicle_thrust_setpoint_s thrust_feedback{};
-	const bool thrust_updated = _vehicle_thrust_setpoint_sub.update(&thrust_feedback);
-
-	// 调试用途：读取当前 actuator_motors，便于观察和对比输出。
-	actuator_motors_s actuator_motors{};
-	const bool motors_updated = _actuator_motors_sub.update(&actuator_motors);
-
-	if (allow_debug_print && (thrust_updated || motors_updated)) {
-		if (thrust_updated) {
-			PX4_INFO("[ThrustSub] thrust_sp=[%.3f, %.3f, %.3f] upward=%.3f",
-				 (double)thrust_feedback.xyz[0],
-				 (double)thrust_feedback.xyz[1],
-				 (double)thrust_feedback.xyz[2],
-				 (double)(-thrust_feedback.xyz[2]));
-		}
-
-		if (motors_updated) {
-			PX4_INFO("[MotorOut] m1=%.3f m2=%.3f m3=%.3f m4=%.3f",
-				 (double)actuator_motors.control[0],
-				 (double)actuator_motors.control[1],
-				 (double)actuator_motors.control[2],
-				 (double)actuator_motors.control[3]);
-		}
-	}
-
-	// 读取起飞状态和落地检测，配合调试日志判断当前飞行阶段。
-	takeoff_status_s takeoff_status{};
-	vehicle_land_detected_s land_detected{};
-	_takeoff_status_sub.update(&takeoff_status);
-	_vehicle_land_detected_sub.update(&land_detected);
-
-	// 打印飞行阶段和基本状态，帮助判断控制器是否在预期状态下运行。
-	if (allow_debug_print) {
-		PX4_INFO("[FlightState] takeoff_state=%d landed=%d ground_contact=%d pos=[%.2f %.2f %.2f] vel=[%.2f %.2f %.2f]",
-			 (int)takeoff_status.takeoff_state,
-			 (int)land_detected.landed,
-			 (int)land_detected.ground_contact,
-			 (double)_current_state.position(0), (double)_current_state.position(1), (double)_current_state.position(2),
-			 (double)_current_state.velocity(0), (double)_current_state.velocity(1), (double)_current_state.velocity(2));
-		_last_debug_print_time = now;
-	}
-
-	// 串级控制流程：位置/速度状态失效时跳过位置环，退化为姿态保持和悬停加速度。
+	// 位置失效时仅保留姿态闭环。
 	const bool run_position_control = !stabilized_mode && (_position_state_age_level < 2);
 
 	if (run_position_control) {
 		PositionControl(state_for_control, _current_command, _dt);
 
 	} else if (!stabilized_mode) {
-		// 只清位置/速度环积分；姿态环继续运行，避免位置掉帧带来电机硬归零。
 		resetPositionPidState();
 		_pos_acc_cmd.zero();
 
-		if (allow_debug_print) {
+		if (shouldLogFaultWarning(now)) {
 			PX4_WARN("position stale, skipping position control");
-			_last_debug_print_time = now;
 		}
 	}
 
@@ -978,35 +972,37 @@ void FullvectorControl::Run()
 
 void FullvectorControl::PositionControl(const UAVStates &state, const UAVCommand &command, const float dt)
 {
-	// dt 无效时不更新 PID，避免除零或 NaN 传播。
+	// 检查时间步长有效性。
 	if (!PX4_ISFINITE(dt) || dt <= FLT_EPSILON) {
 		return;
 	}
 
-	const bool use_relative_pose = (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_OFFBOARD)
-				       && _target_relative_pose_valid;
+	//确定当前位置控制模式
+	const bool use_relative_pose = _relative_pose_active;
+	const bool docking_position_guard = use_relative_pose || _relative_pose_loss_hold;
+	const bool posctl_mode = _vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_POSCTL;
+
+	//初始化局部变量
 	Vector3f ep{};
 	bool position_axis_locked[3] {};
+	bool initialize_velocity_error = false;
 
+	// 选择相对或 NED 位置误差。
 	if (use_relative_pose) {
-		// 机载电脑给出本机在目标机 body FRD 中的位置，先计算相对位置误差。
 		const Vector3f relative_position(_target_relative_pose.position);
 		const Vector3f relative_position_sp(_param_fv_rel_pos_x.get(),
 						    _param_fv_rel_pos_y.get(),
 						    _param_fv_rel_pos_z.get());
 		const Vector3f relative_error_target = relative_position_sp - relative_position;
 
-		// 后续速度环和执行器分配仍使用 NED，因此只把位置外环误差从目标机 FRD 旋转到 NED。
-		const Quatf q_target_body = Quatf(_target_relative_pose.q).normalized();
-		const Dcmf rotation_ned_target = Dcmf(state.attitude) * Dcmf(q_target_body).T();
-		ep = rotation_ned_target * relative_error_target;
+		ep = _rotation_ned_target * relative_error_target;
 
 		for (bool &axis_locked : position_axis_locked) {
 			axis_locked = true;
 		}
 
 	} else {
-		// trajectory_setpoint 的位置为 NaN 时，该轴退出位置外环，仅跟踪速度/加速度目标。
+		// 有限位置目标启用位置环，NaN 目标保留速度控制。
 		for (int i = 0; i < 3; i++) {
 			position_axis_locked[i] = PX4_ISFINITE(command.position(i));
 
@@ -1016,10 +1012,25 @@ void FullvectorControl::PositionControl(const UAVStates &state, const UAVCommand
 		}
 	}
 
+	// POSCTL 锁高时使用融合的 Z 速度反馈。
+	const bool posctl_z_hold_active = posctl_mode && !use_relative_pose && position_axis_locked[2];
+	const bool posctl_z_just_locked = posctl_z_hold_active && !_position_axis_locked[2];
+	_posctl_z_hold_active = posctl_z_hold_active;
+	_vertical_velocity_feedback = state.velocity(2);
+
+	// POSCTL 锁高时融合同源 Z 位置导数。
+	if (posctl_z_hold_active && PX4_ISFINITE(_position.z_deriv)) {
+		const float z_derivative_weight = math::constrain(_param_fv_z_vel_blend.get(), 0.0f, 1.0f);
+		_vertical_velocity_feedback = (1.0f - z_derivative_weight) * state.velocity(2)
+					      + z_derivative_weight * _position.z_deriv;
+	}
+
+	// 切换误差源时清除 PID 历史。
 	if (use_relative_pose != _position_outer_uses_relative_pose) {
-		// 外环误差源切换时只清位置环历史，不改变速度环输入和积分状态。
 		_pos_error_int.zero();
 		_pos_error_prev = ep;
+		_vel_error_int.zero();
+		initialize_velocity_error = true;
 		_position_outer_uses_relative_pose = use_relative_pose;
 
 		for (int i = 0; i < 3; i++) {
@@ -1027,10 +1038,10 @@ void FullvectorControl::PositionControl(const UAVStates &state, const UAVCommand
 		}
 	}
 
+	// 首次运行时抑制微分冲击。
 	if (!_pid_state_initialized) {
-		// 首次运行时用当前误差初始化历史项，避免微分项跳变。
 		_pos_error_prev = ep;
-		_vel_error_prev.zero();
+		initialize_velocity_error = true;
 		_pid_state_initialized = true;
 
 		for (int i = 0; i < 3; i++) {
@@ -1038,7 +1049,7 @@ void FullvectorControl::PositionControl(const UAVStates &state, const UAVCommand
 		}
 	}
 
-	// 每个轴独立开关位置外环。解锁时清积分；重新锁定时同步误差历史，避免微分冲击。
+	// 逐轴处理位置锁定切换。
 	for (int i = 0; i < 3; i++) {
 		if (!position_axis_locked[i]) {
 			_pos_error_int(i) = 0.0f;
@@ -1050,59 +1061,126 @@ void FullvectorControl::PositionControl(const UAVStates &state, const UAVCommand
 		}
 	}
 
-	// 位置外环 PID：根据位置误差生成内部期望速度。
+	// 计算位置误差的微分和积分。
 	const Vector3f dep = (ep - _pos_error_prev) / dt;
 	_pos_error_int += ep * dt;
 
-	// 位置环积分限幅，抑制积分饱和。
+	// 限制积分状态，抑制长时间位置偏差积累。
 	for (int i = 0; i < 3; i++) {
 		_pos_error_int(i) = math::constrain(_pos_error_int(i), -5.0f, 5.0f);
 	}
 
-	// 从矩阵中取出三个轴的 P/I/D 参数。
+	// 位置 PID 增益。
 	const Vector3f pos_kp{gain_pos_pid(0, 0), gain_pos_pid(1, 0), gain_pos_pid(2, 0)};
 	const Vector3f pos_ki{gain_pos_pid(0, 1), gain_pos_pid(1, 1), gain_pos_pid(2, 1)};
 	const Vector3f pos_kd{gain_pos_pid(0, 2), gain_pos_pid(1, 2), gain_pos_pid(2, 2)};
 
-	// 主机定点的相对位置控制不使用 trajectory_setpoint 速度前馈，避免相对误差为零时仍产生运动指令。
-	// 非相对控制分支继续保留原有速度前馈。
+	// 生成期望速度，相对控制禁用轨迹速度前馈。
 	const Vector3f velocity_ff = use_relative_pose ? Vector3f{} : command.velocity;
 	Vector3f v_sp = velocity_ff + pos_kp.emult(ep) + pos_ki.emult(_pos_error_int) + pos_kd.emult(dep);
 
-	// 上层速度作为前馈叠加，之后统一限幅，避免内环指令过大。
+	// 常规模式逐轴限制期望速度。
 	for (int i = 0; i < 3; i++) {
 		v_sp(i) = math::constrain(v_sp(i), -5.0f, 5.0f);
 	}
 
-	// 速度内环 PID：根据内部期望速度和估计速度的误差生成期望加速度。
-	const Vector3f ev = v_sp - state.velocity;
-	const Vector3f dev = (ev - _vel_error_prev) / dt;
-	_vel_error_int += ev * dt;
+	// 对接阶段限制水平速度模长。
+	if (docking_position_guard) {
+		const float horizontal_velocity_limit = math::max(_param_fv_rel_vxy_max.get(), FLT_EPSILON);
+		const float horizontal_velocity_norm = v_sp.xy().norm();
 
+		if (horizontal_velocity_norm > horizontal_velocity_limit) {
+			const float scale = horizontal_velocity_limit / horizontal_velocity_norm;
+			v_sp(0) *= scale;
+			v_sp(1) *= scale;
+		}
+	}
+
+	// 速度 PID 与加速度前馈共同生成期望加速度。
+	Vector3f velocity_feedback = state.velocity;
+	// Z 轴使用 POSCTL 选择后的融合反馈。
+	velocity_feedback(2) = _vertical_velocity_feedback;
+	const Vector3f ev = v_sp - velocity_feedback;
+
+	// 首次运行时抑制微分冲击。
+	if (initialize_velocity_error) {
+		_vel_error_prev = ev;
+	}
+
+	// 锁高切入时同步 Z 轴微分历史。
+	if (posctl_z_just_locked) {
+		_vel_error_prev(2) = ev(2);
+	}
+
+	const Vector3f dev = (ev - _vel_error_prev) / dt;
+
+	// 锁高快速制动时冻结 Z 轴积分。
+	_vel_error_int(0) += ev(0) * dt;
+	_vel_error_int(1) += ev(1) * dt;
+	constexpr float vertical_braking_velocity = 0.15f;
+	const bool allow_vertical_integrator = !posctl_mode || !posctl_z_hold_active
+					       || (fabsf(_vertical_velocity_feedback) < vertical_braking_velocity);
+
+	if (allow_vertical_integrator) {
+		_vel_error_int(2) += ev(2) * dt;
+	}
+
+	// 统一限制速度积分状态在有限范围。
 	for (int i = 0; i < 3; i++) {
 		_vel_error_int(i) = math::constrain(_vel_error_int(i), -3.0f, 3.0f);
 	}
 
+	// 速度 PID 增益。
 	const Vector3f vel_kp{gain_vel_pid(0, 0), gain_vel_pid(1, 0), gain_vel_pid(2, 0)};
-	const Vector3f vel_ki{gain_vel_pid(0, 1), gain_vel_pid(1, 1), gain_vel_pid(2, 1)};
+	Vector3f vel_ki{gain_vel_pid(0, 1), gain_vel_pid(1, 1), gain_vel_pid(2, 1)};
 	const Vector3f vel_kd{gain_vel_pid(0, 2), gain_vel_pid(1, 2), gain_vel_pid(2, 2)};
 
-	// 同理，相对位置控制假定主机加速度为零，不叠加 trajectory_setpoint 加速度前馈。
+	// POSCTL模式单独限制 Z 轴积分带宽和贡献。
+	if (posctl_mode) {
+		vel_ki(2) *= math::constrain(_param_fv_pc_z_i_scale.get(), 0.0f, 1.0f);
+
+		const float z_integral_acceleration_limit = math::max(_param_fv_z_int_max.get(), 0.1f);
+
+		if (fabsf(vel_ki(2)) > FLT_EPSILON) {
+			const float z_integral_state_limit = z_integral_acceleration_limit / fabsf(vel_ki(2));
+			_vel_error_int(2) = math::constrain(_vel_error_int(2),
+							    -z_integral_state_limit, z_integral_state_limit);
+
+		} else {
+			_vel_error_int(2) = 0.0f;
+		}
+	}
+
+	_vertical_velocity_integral_acceleration = vel_ki(2) * _vel_error_int(2);
+
+	// 选择加速度前馈，相对位姿控制禁用轨迹加速度前馈。
 	const Vector3f acceleration_ff = use_relative_pose ? Vector3f{} : command.acceleration;
-	const Vector3f acc_cmd = acceleration_ff + vel_kp.emult(ev) + vel_ki.emult(_vel_error_int) + vel_kd.emult(dev);
-	// 保存给后续电机倾转角和电机转速计算使用。
+	Vector3f acc_cmd = acceleration_ff + vel_kp.emult(ev) + vel_ki.emult(_vel_error_int) + vel_kd.emult(dev);
+
+	// 对接阶段限制水平加速度模长。
+	if (docking_position_guard) {
+		const float horizontal_acceleration_limit = math::max(_param_fv_rel_axy_max.get(), FLT_EPSILON);
+		const float horizontal_acceleration_norm = acc_cmd.xy().norm();
+
+		if (horizontal_acceleration_norm > horizontal_acceleration_limit) {
+			const float scale = horizontal_acceleration_limit / horizontal_acceleration_norm;
+			acc_cmd(0) *= scale;
+			acc_cmd(1) *= scale;
+		}
+	}
+
+	// 保存位置环输出和 PID 历史。
 	_pos_acc_cmd = acc_cmd;
 
-	// 更新历史误差，供下一周期微分项使用。
 	_pos_error_prev = ep;
 	_vel_error_prev = ev;
 
+	// 保存各轴位置锁定状态。
 	for (int i = 0; i < 3; i++) {
 		_position_axis_locked[i] = position_axis_locked[i];
 	}
 
-	// 发布当前控制器的完整位置/速度/加速度目标。
-	// FlightModeManager 在 MPC_POS_MODE=4 下会用其中的速度作为开环切换反馈。
+	// 发布位置环目标和模式切换反馈。
 	vehicle_local_position_setpoint_s position_controller_output{};
 	position_controller_output.timestamp = hrt_absolute_time();
 	position_controller_output.x = command.position(0);
@@ -1120,149 +1198,203 @@ void FullvectorControl::PositionControl(const UAVStates &state, const UAVCommand
 	position_controller_output.yaw = command.Euler_angles(2);
 	position_controller_output.yawspeed = command.angular_velocity(2);
 	_position_controller_output_pub.publish(position_controller_output);
-
-	if ((_param_print_msg_a_en.get() != 0) && ((_last_debug_print_time == 0)
-			|| (hrt_elapsed_time(&_last_debug_print_time) > 200_ms))) {
-		PX4_INFO("[PosCtrl] ep=[%.2f %.2f %.2f] acc_sp=[%.2f %.2f %.2f]",
-			 (double)ep(0), (double)ep(1), (double)ep(2),
-			 (double)acc_cmd(0), (double)acc_cmd(1), (double)acc_cmd(2));
-	}
 }
 
 void FullvectorControl::AttitudeControl(const UAVStates &state, UAVCommand &command, const float dt,
 					bool stabilized_mode)
 {
-	// dt 无效时不更新 PID。
+	// 检查时间步长有效性。
 	if (!PX4_ISFINITE(dt) || dt <= FLT_EPSILON) {
 		return;
 	}
 
-	const bool use_relative_pose = (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_OFFBOARD)
-				       && _target_relative_pose_valid;
+	// 确定当前姿态控制模式。
+	const bool use_relative_pose = _relative_pose_active;
+	const bool docking_attitude_guard = use_relative_pose || _relative_pose_loss_hold;
+	const bool full_relative_attitude = _param_fv_rel_att_mode.get() == 1;
+	// 初始化局部变量。
 	Vector3f euler_cur;
 	Vector3f euler_sp;
+	bool initialize_angular_velocity_error = false;
 
+	// 选择绝对或相对姿态误差源。
 	if (use_relative_pose) {
-		// 与现有绝对姿态环一致：先把机载电脑给出的相对四元数转成 roll/pitch/yaw。
-		euler_cur = Vector3f(Eulerf(Quatf(_target_relative_pose.q).normalized()));
-		euler_sp = Vector3f(_param_fv_rel_roll.get(),
-				    _param_fv_rel_pitch.get(),
-				    _param_fv_rel_yaw.get());
+		if (full_relative_attitude) {
+			// 旧模式跟踪三轴视觉相对姿态。
+			euler_cur = _relative_euler;
+			euler_sp = Vector3f(_param_fv_rel_roll.get(),
+					    _param_fv_rel_pitch.get(),
+					    _param_fv_rel_yaw.get());
+
+		} else {
+			// 默认由 IMU 保持 roll/pitch，仅由视觉对齐 yaw。
+			euler_cur = state.Euler_angles;
+			euler_sp = command.Euler_angles;
+			euler_cur(2) = _relative_euler(2);
+			euler_sp(2) = _param_fv_rel_yaw.get();
+		}
 
 	} else {
-		// 非 Offboard 或相对位姿无效时保留原有绝对姿态目标。
-		euler_cur = Vector3f(Eulerf(state.attitude));
+		euler_cur = state.Euler_angles;
 		euler_sp = command.Euler_angles;
 	}
 
+	// 定点模式判定。
 	const Vector3f angular_velocity_ff = command.angular_velocity;
 	const bool posctl_mode = _vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_POSCTL;
 	const bool posctl_yaw_rate_active = posctl_mode && (fabsf(angular_velocity_ff(2)) > FLT_EPSILON);
 	const bool manual_yaw_control = stabilized_mode || posctl_mode;
 
-	// 姿态角误差需要 wrap 到 [-pi, pi]，避免跨越 pi 时出现大跳变。
+	// 计算姿态角误差，将姿态误差约束到最短角路径。
 	Vector3f e_att = euler_sp - euler_cur;
 	e_att(0) = matrix::wrap_pi(e_att(0));
 	e_att(1) = matrix::wrap_pi(e_att(1));
 	e_att(2) = matrix::wrap_pi(e_att(2));
 
+	// 切换误差源时清除 PID 历史。
 	if (use_relative_pose != _attitude_outer_uses_relative_pose) {
-		// 外环误差源切换时只清姿态环历史，不改变角速度环输入和积分状态。
 		_att_error_int.zero();
 		_att_error_prev = e_att;
+		_ang_vel_error_int.zero();
+		initialize_angular_velocity_error = true;
 		_attitude_outer_uses_relative_pose = use_relative_pose;
 	}
 
+	// 首次运行时抑制微分冲击。
 	if (!_att_pid_state_initialized) {
-		// 首次运行初始化微分历史项。
 		_att_error_prev = e_att;
-		_ang_vel_error_prev.zero();
+		initialize_angular_velocity_error = true;
 		_att_pid_state_initialized = true;
 	}
 
-	// 姿态外环 PID：根据姿态误差生成期望角速度。
+	// 计算姿态误差微分。
 	Vector3f de_att = (e_att - _att_error_prev) / dt;
 
+	// POSCTL模式 yaw 角速度切入时抑制姿态微分脉冲。
 	if (posctl_yaw_rate_active) {
-		// 从航向保持切入角速度控制时抑制 yaw 角度微分脉冲，由角速度前馈直接给出转向目标。
 		de_att(2) = 0.0f;
 	}
 
+	// 手动 yaw 时禁用姿态积分。
 	if (stabilized_mode || posctl_yaw_rate_active) {
-		// 自稳 yaw 以及定点模式打杆期间不让姿态环 yaw 积分与角速度前馈对抗。
 		_att_error_int(2) = 0.0f;
 	}
 
+	// 计算姿态 PID 积分。
 	_att_error_int += e_att * dt;
 
+	// 手动 yaw 时禁用姿态积分。
 	if (stabilized_mode || posctl_yaw_rate_active) {
 		_att_error_int(2) = 0.0f;
 	}
 
+	// 姿态积分逐轴限幅，避免持续角度误差饱和。
 	for (int i = 0; i < 3; i++) {
 		_att_error_int(i) = math::constrain(_att_error_int(i), -1.0f, 1.0f);
 	}
 
+	// 姿态 PID 增益。
 	const Vector3f att_kp{gain_att_pid(0, 0), gain_att_pid(1, 0), gain_att_pid(2, 0)};
 	const Vector3f att_ki{gain_att_pid(0, 1), gain_att_pid(1, 1), gain_att_pid(2, 1)};
 	const Vector3f att_kd{gain_att_pid(0, 2), gain_att_pid(1, 2), gain_att_pid(2, 2)};
 
+	// 姿态 PID 生成期望角速度。
 	Vector3f omega_sp = att_kp.emult(e_att) + att_ki.emult(_att_error_int) + att_kd.emult(de_att);
 
+	// 视觉全姿态模式缩放三轴，默认模式只缩放 yaw。
+	if (use_relative_pose) {
+		const float relative_attitude_gain = math::constrain(_param_fv_rel_att_gain.get(), 0.05f, 1.0f);
+
+		if (full_relative_attitude) {
+			omega_sp *= relative_attitude_gain;
+
+		} else {
+			omega_sp(2) *= relative_attitude_gain;
+		}
+	}
+
+	// 对接阶段限制期望角速度。
+	if (docking_attitude_guard) {
+		const float rate_limit = math::max(_param_fv_rel_rate_max.get(), 0.1f);
+
+		for (int i = 0; i < 3; i++) {
+			omega_sp(i) = math::constrain(omega_sp(i), -rate_limit, rate_limit);
+		}
+	}
+
+	// 叠加手动 yaw 角速度前馈。
 	if (manual_yaw_control) {
-		constexpr float max_manual_yaw_rate = 2.0f; // rad/s，与手动 yaw 目标积分限幅保持一致。
+		constexpr float max_manual_yaw_rate = 2.0f; // rad/s
 		omega_sp(2) += angular_velocity_ff(2);
 		omega_sp(2) = math::constrain(omega_sp(2), -max_manual_yaw_rate, max_manual_yaw_rate);
 	}
 
-	// 将姿态外环生成的期望角速度写回 command，供调试或后续扩展使用。
 	command.angular_velocity = omega_sp;
 
-	// 角速度内环 PID：根据期望角速度和当前角速度生成期望角加速度。
+	// 计算角速度误差。
 	const Vector3f e_w = omega_sp - state.angular_velocity;
+
+	// 误差源切换后同步角速度微分历史。
+	if (initialize_angular_velocity_error) {
+		_ang_vel_error_prev = e_w;
+	}
+
+	// 计算角速度误差微分和积分。
 	const Vector3f de_w = (e_w - _ang_vel_error_prev) / dt;
 	_ang_vel_error_int += e_w * dt;
 
+	// 角速度积分逐轴限幅。
 	for (int i = 0; i < 3; i++) {
 		_ang_vel_error_int(i) = math::constrain(_ang_vel_error_int(i), -3.0f, 3.0f);
 	}
 
-	constexpr float yaw_heading_hold_deadband = 0.03f; // rad，航向误差很小时清掉 yaw 积分残留。
-	constexpr float yaw_rate_hold_deadband = 0.03f; // rad/s，角速度接近目标时清掉 yaw 积分残留。
+	// 定义手动 Yaw 控制保护常量。
+	constexpr float yaw_heading_hold_deadband = 0.03f; // rad
+	constexpr float yaw_rate_hold_deadband = 0.03f; // rad/s
 	constexpr float yaw_rate_integral_limit = 0.3f;
-	constexpr float max_manual_yaw_accel = 4.0f; // rad/s^2，限制电机差动突变。
+	constexpr float max_manual_yaw_accel = 4.0f; // rad/s^2
 
+	// 限制手动 yaw 的积分修正量。
 	if (manual_yaw_control) {
-		// yaw 角速度积分只允许很小的修正量，避免电机差动被积分项突然拉大。
 		_ang_vel_error_int(2) = math::constrain(_ang_vel_error_int(2),
 							-yaw_rate_integral_limit,
 							yaw_rate_integral_limit);
 	}
 
+	// 角速度 PID 增益。
 	const Vector3f w_kp{gain_ang_vel_pid(0, 0), gain_ang_vel_pid(1, 0), gain_ang_vel_pid(2, 0)};
 	const Vector3f w_ki{gain_ang_vel_pid(0, 1), gain_ang_vel_pid(1, 1), gain_ang_vel_pid(2, 1)};
 	const Vector3f w_kd{gain_ang_vel_pid(0, 2), gain_ang_vel_pid(1, 2), gain_ang_vel_pid(2, 2)};
 
+	// 角速度 PID 生成期望角加速度。
 	Vector3f ang_acc_cmd = w_kp.emult(e_w) + w_ki.emult(_ang_vel_error_int) + w_kd.emult(de_w);
 
+	// 小误差下清理 yaw 积分残留。
 	if (manual_yaw_control) {
 		if ((fabsf(e_att(2)) < yaw_heading_hold_deadband) && (fabsf(e_w(2)) < yaw_rate_hold_deadband)) {
-			// 已接近目标航向并且 yaw rate 误差很小时，清掉残余积分，保持松杆输出干净。
 			_ang_vel_error_int(2) = 0.0f;
 			ang_acc_cmd(2) = w_kp(2) * e_w(2) + w_kd(2) * de_w(2);
 		}
 
+		// 限制手动 yaw 对电机差动的瞬时需求。
 		ang_acc_cmd(2) = math::constrain(ang_acc_cmd(2), -max_manual_yaw_accel, max_manual_yaw_accel);
 	}
 
-	// 保存给后续电机转速分配使用。
-	_att_ang_acc_cmd = ang_acc_cmd;
+	// 对接阶段限制期望角加速度。
+	if (docking_attitude_guard) {
+		const float acceleration_limit = math::max(_param_fv_rel_acc_max.get(), 0.5f);
 
-	// 更新历史误差。
+		for (int i = 0; i < 3; i++) {
+			ang_acc_cmd(i) = math::constrain(ang_acc_cmd(i), -acceleration_limit, acceleration_limit);
+		}
+	}
+
+	// 保存姿态环输出和 PID 历史。
+	_att_ang_acc_cmd = ang_acc_cmd;
 	_att_error_prev = e_att;
 	_ang_vel_error_prev = e_w;
 
-	// 发布姿态控制器的输出，便于观察控制链路。
+	// 发布姿态环目标和模式切换反馈。
 	vehicle_angular_acceleration_setpoint_s attitude_controller_output{};
 	attitude_controller_output.timestamp_sample = hrt_absolute_time();
 	attitude_controller_output.timestamp = hrt_absolute_time();
@@ -1270,37 +1402,32 @@ void FullvectorControl::AttitudeControl(const UAVStates &state, UAVCommand &comm
 	attitude_controller_output.xyz[1] = ang_acc_cmd(1);
 	attitude_controller_output.xyz[2] = ang_acc_cmd(2);
 	_attitude_controller_output_pub.publish(attitude_controller_output);
-
-	if ((_param_print_msg_a_en.get() != 0) && ((_last_debug_print_time == 0)
-			|| (hrt_elapsed_time(&_last_debug_print_time) > 200_ms))) {
-		PX4_INFO("[AttCtrl] e_att=[%.2f %.2f %.2f] ang_acc_sp=[%.2f %.2f %.2f]",
-			 (double)e_att(0), (double)e_att(1), (double)e_att(2),
-			 (double)ang_acc_cmd(0), (double)ang_acc_cmd(1), (double)ang_acc_cmd(2));
-	}
 }
 
 void FullvectorControl::calculateMotorCommand(const UAVStates &state, const UAVCommand &command)
 {
-	// 读取期望姿态角；当前电机倾转角主要使用 roll/pitch，yaw 通过公共倾转补偿参与。
+	// 读取期望 Roll/Pitch
 	const float phi_sp = command.Euler_angles(0);
 	const float theta_sp = command.Euler_angles(1);
 
-	// 使用前级位置环输出和姿态环输出。
+	// 读取位置环和姿态环输出
 	const Vector3f &acc_sp_ned = _pos_acc_cmd;
 	const Vector3f &ang_acc_sp = _att_ang_acc_cmd;
+
+	// 读取倾转舵机的最大倾转角
 	const float tilt_angle_max_rad = math::max(_param_fv_tilt_max.get(), 0.01f);
+	// 读取 yaw 补偿最大倾转角和 yaw 电机混合权重
 	const float yaw_tilt_max_rad = math::constrain(_param_fv_yaw_tilt_max.get(), 0.0f, tilt_angle_max_rad);
 	const float yaw_motor_mix_weight = math::constrain(_param_fv_yaw_mix_wt.get(), 0.0f, 1.0f);
 
-	// 位置环输出使用 NED 世界坐标，而四个倾转舵机的几何分配定义在机体系。
-	// 按当前航向将水平加速度旋转到 body FRD 坐标系，便于后续计算四个电机的基础倾转角。
-	const float current_yaw = Vector3f(Eulerf(state.attitude))(2);
+	// 读取当前 Yaw 并将 NED 水平加速度转换到机体 FRD。
+	const float current_yaw = state.Euler_angles(2);
 	const float cos_yaw = cosf(current_yaw);
 	const float sin_yaw = sinf(current_yaw);
 	const float acc_sp_body_x = cos_yaw * acc_sp_ned(0) + sin_yaw * acc_sp_ned(1);
 	const float acc_sp_body_y = -sin_yaw * acc_sp_ned(0) + cos_yaw * acc_sp_ned(1);
 
-	// 根据悬停推力估算基础电机角速度，K_F 太小时做保护。
+	// 保护物理参数并计算悬停角速度。
 	const float kf_safe = math::max(K_F, 1e-6f);
 	const float mass_safe = math::max(mass, 1e-3f);
 	const float gravity_safe = math::max(gravity, 1e-3f);
@@ -1309,64 +1436,73 @@ void FullvectorControl::calculateMotorCommand(const UAVStates &state, const UAVC
 	const float I_xx = math::max(inertia(0, 0), 1e-6f);
 	const float I_yy = math::max(inertia(1, 1), 1e-6f);
 	const float I_zz = math::max(inertia(2, 2), 1e-6f);
-	const float base_thrust = sqrtf((mass_safe * gravity_safe) / (4.0f * kf_safe));
-
-	//力到倾角的转换系数
+	// 根据物理模型计算悬停角速度。
+	const float hover_omega_model = sqrtf((mass_safe * gravity_safe) / (4.0f * kf_safe));
+	// 计算力到倾角的转换系数。
 	const float acc_to_tilt = sqrtf(2.0f) / (mass_safe * gravity_safe);
 
-	// 根据姿态目标和水平加速度指令计算四个电机的基础倾转角偏置。
-	// 小角度下 controlAllocation() 中有 a_ned_xy = -R_nb * F_body_xy / m，
-	// 因此期望 NED 水平加速度需要生成反向机体系水平力。
+	// 按 X 型布局由姿态和水平加速度生成四路基础倾转角。
 	const float alpha_base1 =  sqrtf(2.0f) * theta_sp + sqrtf(2.0f) * phi_sp
 				   - acc_to_tilt * mass_safe * (acc_sp_body_x - acc_sp_body_y) / 4.0f;
 	const float alpha_base2 = -sqrtf(2.0f) * theta_sp - sqrtf(2.0f) * phi_sp
-				   + acc_to_tilt * mass_safe * (acc_sp_body_x - acc_sp_body_y) / 4.0f;
+				  + acc_to_tilt * mass_safe * (acc_sp_body_x - acc_sp_body_y) / 4.0f;
 	const float alpha_base3 = -sqrtf(2.0f) * theta_sp + sqrtf(2.0f) * phi_sp
-				   + acc_to_tilt * mass_safe * (acc_sp_body_x + acc_sp_body_y) / 4.0f;
+				  + acc_to_tilt * mass_safe * (acc_sp_body_x + acc_sp_body_y) / 4.0f;
 	const float alpha_base4 =  sqrtf(2.0f) * theta_sp - sqrtf(2.0f) * phi_sp
 				   - acc_to_tilt * mass_safe * (acc_sp_body_x + acc_sp_body_y) / 4.0f;
-
-
+	// 有符号平方根保留各力矩通道方向。
 	const auto signed_sqrt = [](float value) {
 		return (value >= 0.0f) ? sqrtf(value) : -sqrtf(fabsf(value));
 	};
 
-	// 将期望角加速度和垂向加速度换算为各控制通道对应的电机角速度增量。
-	const float w_roll = signed_sqrt((I_xx * ang_acc_sp(0)) / (4.0f * kf_safe * arm_d));
-	const float w_pitch = signed_sqrt((I_yy * ang_acc_sp(1)) / (4.0f * kf_safe * arm_d));
-	const float w_yaw = yaw_motor_mix_weight * signed_sqrt((I_zz * ang_acc_sp(2)) / (4.0f * kf_safe * distance_safe));
+	// 计算四路电机角速度需求，按力矩平方律反算。
+	float w_roll = signed_sqrt((I_xx * ang_acc_sp(0)) / (4.0f * kf_safe * arm_d));
+	float w_pitch = signed_sqrt((I_yy * ang_acc_sp(1)) / (4.0f * kf_safe * arm_d));
+	float w_yaw = yaw_motor_mix_weight * signed_sqrt((I_zz * ang_acc_sp(2)) / (4.0f * kf_safe * distance_safe));
 	const float w_fz = signed_sqrt((mass_safe * (gravity_safe - acc_sp_ned(2))) / (4.0f * kf_safe));
 
-	// 将姿态角加速度和垂向加速度叠加到四个电机角速度命令。
-	// 电机编号：1=右前，2=左后，3=左前，4=右后；偏航按 1/2 与 3/4 反向差动。
+	// 对接阶段启用电机差动保护，等比例压缩三轴差动，保留力矩方向并避免总推力被过度侵占。
+	if (_relative_pose_active || _relative_pose_loss_hold) {
+		const float differential_ratio = math::constrain(_param_fv_rel_motor_diff.get(), 0.05f, 1.0f);
+		const float differential_limit = differential_ratio * math::max(fabsf(w_fz), 1.0f);
+		const float differential_sum = fabsf(w_roll) + fabsf(w_pitch) + fabsf(w_yaw);
+
+		if (differential_sum > differential_limit) {
+			const float differential_scale = differential_limit / differential_sum;
+			w_roll *= differential_scale;
+			w_pitch *= differential_scale;
+			w_yaw *= differential_scale;
+		}
+	}
+
+	// 计算四路电机角速度。
 	motor_1 = -w_roll + w_pitch + w_yaw + w_fz;
 	motor_2 =  w_roll - w_pitch + w_yaw + w_fz;
 	motor_3 =  w_roll + w_pitch - w_yaw + w_fz;
 	motor_4 = -w_roll - w_pitch - w_yaw + w_fz;
 
-	// 限制电机角速度，防止负值或超过设定上限。
+	// 限制电机角速度。
 	constexpr float motor_speed_max = 20000.0f;
 	motor_1 = math::constrain(motor_1, 0.0f, motor_speed_max);
 	motor_2 = math::constrain(motor_2, 0.0f, motor_speed_max);
 	motor_3 = math::constrain(motor_3, 0.0f, motor_speed_max);
 	motor_4 = math::constrain(motor_4, 0.0f, motor_speed_max);
 
-	// 四个电机叠加同向小倾转时，理想对称下水平合力互相抵消，但会产生 yaw 力矩。
-	// 实机公共倾转方向与原推导相反，这里按实机方向让 alpha_yaw 跟随 tau_z_sp。
+	// 四个舵机叠加同向公共倾转，以水平分力补偿 yaw 力矩。
 	const float motor_sq_sum = math::max(motor_1 * motor_1 + motor_2 * motor_2 + motor_3 * motor_3 + motor_4 * motor_4,
 					     1.0f);
 	const float tau_z_sp = I_zz * ang_acc_sp(2);
+	// 计算 yaw 力矩对应的公共倾转角并限幅。
 	const float alpha_yaw = math::constrain(tau_z_sp / (kf_safe * distance_safe * motor_sq_sum),
 						-yaw_tilt_max_rad, yaw_tilt_max_rad);
 
-	// yaw 公共倾转叠加在原有 roll/pitch/平移倾转上，最后统一限幅，避免超过机构行程。
+	// 叠加公共倾转角并统一限幅。
 	alpha_offset1 = math::constrain(alpha_base1 + alpha_yaw, -tilt_angle_max_rad, tilt_angle_max_rad);
 	alpha_offset2 = math::constrain(alpha_base2 + alpha_yaw, -tilt_angle_max_rad, tilt_angle_max_rad);
 	alpha_offset3 = math::constrain(alpha_base3 + alpha_yaw, -tilt_angle_max_rad, tilt_angle_max_rad);
 	alpha_offset4 = math::constrain(alpha_base4 + alpha_yaw, -tilt_angle_max_rad, tilt_angle_max_rad);
 
-	// actuator_motors 字段支持 [-1, 1]，普通非可逆电机应发布 [0, 1] 归一化正推力；
-	// 内部 motor_* 仍按角速度计算，再按 T ~ omega^2 映射到悬停油门附近。
+	// 创建电机输出消息，设置电机消息采样和发布时间并初始化为 NaN。
 	actuator_motors_s motor_speed{};
 	motor_speed.timestamp_sample = hrt_absolute_time();
 	motor_speed.timestamp = hrt_absolute_time();
@@ -1375,20 +1511,23 @@ void FullvectorControl::calculateMotorCommand(const UAVStates &state, const UAVC
 		motor_speed.control[i] = NAN;
 	}
 
-	const float hover_omega = math::max(base_thrust, 1.0f);
+	const float hover_omega = math::max(hover_omega_model, 1.0f);
+	// 读取悬停油门并限制在合理范围。
 	const float hover_throttle = math::constrain(_param_fv_hover_thr.get(), 0.05f, 0.95f);
-	// omega 与推力近似满足平方关系，先相对悬停角速度归一化。
+	// 定义电机角速度到归一化推力的转换函数。
 	const auto omega_to_normalized_thrust = [hover_omega, hover_throttle](float omega) {
 		const float ratio = omega / hover_omega;
+		// 归一化推力 = 悬停油门 * (角速度比)^2，限制在 [0, 1]。
 		return math::constrain(hover_throttle * ratio * ratio, 0.0f, 1.0f);
 	};
 
+	// 发布电机角速度转换后的归一化推力。
 	motor_speed.control[0] = omega_to_normalized_thrust(motor_1);
 	motor_speed.control[1] = omega_to_normalized_thrust(motor_2);
 	motor_speed.control[2] = omega_to_normalized_thrust(motor_3);
 	motor_speed.control[3] = omega_to_normalized_thrust(motor_4);
 
-	// actuator_servos 期望归一化位置 [-1, 1]，这里按最大倾转角归一化。
+	// 创建倾转舵机输出消息，设置舵机消息采样和发布时间并初始化为 NaN。
 	actuator_servos_s motor_tilt{};
 	motor_tilt.timestamp_sample = hrt_absolute_time();
 	motor_tilt.timestamp = hrt_absolute_time();
@@ -1397,12 +1536,13 @@ void FullvectorControl::calculateMotorCommand(const UAVStates &state, const UAVC
 		motor_tilt.control[i] = NAN;
 	}
 
+	// 将四路倾转角归一化到 [-1, 1] 范围，供舵机控制。
 	motor_tilt.control[0] = math::constrain(alpha_offset1 / tilt_angle_max_rad, -1.0f, 1.0f);
 	motor_tilt.control[1] = math::constrain(alpha_offset2 / tilt_angle_max_rad, -1.0f, 1.0f);
 	motor_tilt.control[2] = math::constrain(alpha_offset3 / tilt_angle_max_rad, -1.0f, 1.0f);
 	motor_tilt.control[3] = math::constrain(alpha_offset4 / tilt_angle_max_rad, -1.0f, 1.0f);
 
-	// 缓存本拍有效输出，供短时姿态/角速度话题掉帧时保持使用。
+	// 缓存并发布执行器输出。
 	_last_motor_output = motor_speed;
 	_last_tilt_output = motor_tilt;
 	_last_actuator_output_valid = true;
@@ -1413,37 +1553,23 @@ void FullvectorControl::calculateMotorCommand(const UAVStates &state, const UAVC
 
 void FullvectorControl::controlAllocation(const UAVStates &state, const UAVCommand &command)
 {
-	// 当前姿态用于把机体系推力转换到 NED 世界系，并进行调试用动力学积分。
-	const Vector3f euler_cur = Vector3f(Eulerf(state.attitude));
+	// 读取当前欧拉角。
+	const Vector3f &euler_cur = state.Euler_angles;
 	const float roll_rad = euler_cur(0);
 	const float pitch_rad = euler_cur(1);
 	const float yaw_rad = euler_cur(2);
-	(void)roll_rad;
-	(void)pitch_rad;
-	(void)yaw_rad;
-
-	// 先根据控制器输出计算电机角速度和倾转角。
+	// 计算并发布真实执行器指令。
 	calculateMotorCommand(state, command);
 
-	if (_param_print_msg_a_en.get() != 0) {
-		static hrt_abstime last_ctrl_alloc_print_time{0};
-
-		if ((last_ctrl_alloc_print_time == 0) || (hrt_elapsed_time(&last_ctrl_alloc_print_time) > 200_ms)) {
-			PX4_INFO("[CtrlAlloc] motor_speed=[%.1f %.1f %.1f %.1f] alpha_rad=[%.3f %.3f %.3f %.3f]",
-				 (double)motor_1, (double)motor_2, (double)motor_3, (double)motor_4,
-				 (double)alpha_offset1, (double)alpha_offset2, (double)alpha_offset3, (double)alpha_offset4);
-			last_ctrl_alloc_print_time = hrt_absolute_time();
-		}
-	}
-
-	// 电机角速度平方用于推力和反扭矩计算。
+	// 计算四路电机角速度平方。
 	const float m1_sq = motor_1 * motor_1;
 	const float m2_sq = motor_2 * motor_2;
 	const float m3_sq = motor_3 * motor_3;
 	const float m4_sq = motor_4 * motor_4;
+	// 计算 45° 方向投影系数。
 	const float c = sqrtf(2.0f) * 0.5f;
 
-	// 由四个倾转电机的推力分量合成机体系合力 Fx/Fy/Fz。
+	// 计算机体系下的推力分量。
 	const float Fx = + K_F * m1_sq * c * sinf(alpha_offset1)
 			 - K_F * m2_sq * c * sinf(alpha_offset2)
 			 - K_F * m3_sq * c * sinf(alpha_offset3)
@@ -1459,7 +1585,7 @@ void FullvectorControl::controlAllocation(const UAVStates &state, const UAVComma
 			 + K_F * m3_sq * cosf(alpha_offset3)
 			 + K_F * m4_sq * cosf(alpha_offset4);
 
-	// 将机体系力转换为世界系加速度，NED 坐标下 z 方向含重力项。
+	// 计算 NED 坐标系下加速度。
 	const float mass_safe = math::max(mass, 1e-3f);
 	const float dv_x = - ((cosf(pitch_rad) * cosf(yaw_rad)) * Fx
 			      + (cosf(yaw_rad) * sinf(pitch_rad) * sinf(roll_rad) - sinf(yaw_rad) * cosf(roll_rad)) * Fy
@@ -1473,13 +1599,13 @@ void FullvectorControl::controlAllocation(const UAVStates &state, const UAVComma
 				      + (sinf(roll_rad) * cosf(pitch_rad)) * Fy
 				      + (cosf(roll_rad) * cosf(pitch_rad)) * Fz) / mass_safe;
 
-	// 简单积分得到预测位置和速度；当前仅用于内部调试计算，暂不发布。
+	// 一步预测位置和速度。
 	const Vector3f acc_world(dv_x, dv_y, dv_z);
 	const float dt = math::max(_dt, 0.0f);
 	const Vector3f vel_integrated = state.velocity + acc_world * dt;
 	const Vector3f pos_integrated = state.position + state.velocity * dt + 0.5f * acc_world * dt * dt;
 
-	// 计算电机反扭矩和倾转推力通过力臂产生的机体系力矩。
+	// 合成旋翼反扭矩
 	const float Qx = 0.0f;
 	const float Qy = 0.0f;
 	const float Qz = K_M * m1_sq * cosf(alpha_offset1)
@@ -1487,6 +1613,7 @@ void FullvectorControl::controlAllocation(const UAVStates &state, const UAVComma
 			 - K_M * m3_sq * cosf(alpha_offset3)
 			 - K_M * m4_sq * cosf(alpha_offset4);
 
+	// 计算机体系下的力矩。
 	const float arm_d = distance / sqrtf(2.0f);
 	const float tau_x = -K_F * m1_sq * arm_d * cosf(alpha_offset1)
 			    + K_F * m2_sq * arm_d * cosf(alpha_offset2)
@@ -1501,7 +1628,7 @@ void FullvectorControl::controlAllocation(const UAVStates &state, const UAVComma
 			    - K_F * m3_sq * distance * sinf(alpha_offset3)
 			    - K_F * m4_sq * distance * sinf(alpha_offset4) + Qz;
 
-	// 刚体转动动力学：由力矩、惯量和转子陀螺项估算机体系角加速度。
+	// 读取角速度及转动惯量。
 	const float p = state.angular_velocity(0);
 	const float q = state.angular_velocity(1);
 	const float r = state.angular_velocity(2);
@@ -1510,25 +1637,26 @@ void FullvectorControl::controlAllocation(const UAVStates &state, const UAVComma
 	const float I_zz = math::max(inertia(2, 2), 1e-6f);
 	const float rotor_mix = (motor_1 + motor_2 - motor_3 - motor_4);
 
+	// 计算机体系下的角加速度。
 	const float dp = (tau_x + q * r * (I_yy - I_zz) + J_RP * q * rotor_mix) / I_xx;
 	const float dq = (tau_y + p * r * (I_zz - I_xx) - J_RP * p * rotor_mix) / I_yy;
 	const float dr = (tau_z + p * q * (I_xx - I_yy)) / I_zz;
 
-	// 积分角加速度得到新的角速度。
+	// 一步预测机体系角速度。
 	const Vector3f ang_acc_body(dp, dq, dr);
 	const Vector3f omega_integrated = state.angular_velocity + ang_acc_body * dt;
 	const float p_new = omega_integrated(0);
 	const float q_new = omega_integrated(1);
 	const float r_new = omega_integrated(2);
 
-	// 将机体系角速度转换为欧拉角变化率，pitch 接近奇异点时做保护。
+	// 转换欧拉角速率并保护 pitch 奇异点。
 	const float cos_pitch = math::max(fabsf(cosf(pitch_rad)), 1e-4f);
 	const float tan_pitch = sinf(pitch_rad) / cos_pitch;
 	const float dphi = p_new + q_new * tan_pitch * sinf(roll_rad) + r_new * tan_pitch * cosf(roll_rad);
 	const float dtheta = q_new * cosf(roll_rad) - r_new * sinf(roll_rad);
 	const float dpsi = (q_new * sinf(roll_rad) + r_new * cosf(roll_rad)) / cos_pitch;
 
-	// 积分欧拉角并转换回四元数；当前结果仅用于调试占位，避免影响估计器状态。
+	// 一步预测姿态；这些局部结果仅校核动力学模型，不进入闭环或 uORB 输出。
 	const Vector3f euler_integrated = euler_cur + Vector3f(dphi, dtheta, dpsi) * dt;
 	const Quatf q_integrated(Eulerf(euler_integrated(0), euler_integrated(1), euler_integrated(2)));
 	(void)pos_integrated;
@@ -1540,9 +1668,10 @@ void FullvectorControl::controlAllocation(const UAVStates &state, const UAVComma
 
 int FullvectorControl::task_spawn(int argc, char *argv[])
 {
-	// PX4 模块启动入口：创建控制器实例并挂到 WorkQueue。
+	// 创建模块并挂载到 WorkQueue。
 	FullvectorControl *instance = new FullvectorControl();
 
+	// 检查实例是否创建成功。
 	if (instance) {
 		_object.store(instance);
 		_task_id = task_id_is_work_queue;
@@ -1555,7 +1684,7 @@ int FullvectorControl::task_spawn(int argc, char *argv[])
 		PX4_ERR("alloc failed");
 	}
 
-	// 初始化失败时释放对象并返回错误。
+	// 初始化失败时释放实例。
 	delete instance;
 	_object.store(nullptr);
 	_task_id = -1;
@@ -1563,15 +1692,15 @@ int FullvectorControl::task_spawn(int argc, char *argv[])
 	return PX4_ERROR;
 }
 
+// 处理未知命令。
 int FullvectorControl::custom_command(int argc, char *argv[])
 {
-	// 当前模块没有自定义子命令，统一打印用法说明。
 	return print_usage("unknown command");
 }
 
+// 打印模块使用说明。
 int FullvectorControl::print_usage(const char *reason)
 {
-	// 输出模块说明和 PX4 标准 start/stop/status 用法。
 	if (reason) {
 		PX4_WARN("%s\n", reason);
 	}
@@ -1591,8 +1720,8 @@ int FullvectorControl::print_usage(const char *reason)
 	return 0;
 }
 
+// 声明模块入口函数。
 extern "C" __EXPORT int fullvector_control_main(int argc, char *argv[])
 {
-	// C 链接入口，供 PX4 模块加载器按模块名调用。
 	return FullvectorControl::main(argc, argv);
 }

@@ -2,33 +2,6 @@
 module_name: fullvector_control
 
 parameters:
-  - group: Demo
-    definitions:
-      PRINT_A_EN:
-        type: int32
-        default: 0
-        min: 0
-        max: 1
-        description:
-            short: 调试打印开关
-            long: |
-                控制 fullvector_control 的调试日志输出。
-                设置为 1 时周期性打印控制器状态和中间量；设置为 0 时关闭这些调试打印。
-
-      PRINT_NUM_VALUE:
-        type: float
-        default: 0.8
-        decimal: 2
-        min: 0.2
-        max: 1.0
-        unit: s
-        description:
-            short: 调试打印数值
-            long: |
-                PRINT_A_EN 启用时随调试日志打印的数值。
-                主要用于确认参数更新链路是否生效。
-
-
   - group: Fullvector Control
     definitions:
       FV_POS_P_X:
@@ -209,7 +182,44 @@ parameters:
           short: Z 轴速度积分增益
           long: |
             Z 轴速度内环积分增益。
-            用于补偿持续的垂向速度跟踪误差。
+            用于补偿持续的垂向速度跟踪误差；定点模式会额外乘以 FV_PC_Z_I_SCALE。
+
+      FV_PC_Z_I_SCALE:
+        type: float
+        default: 0.5
+        decimal: 2
+        min: 0.0
+        max: 1.0
+        description:
+          short: 定点垂向积分增益缩放
+          long: |
+            仅在定点模式中缩放 FV_VEL_I_Z，默认 0.5 使有效垂向积分增益由 2.0 降为 1.0。
+            Offboard、相对对接及其他控制模式继续使用未缩放的 FV_VEL_I_Z。
+
+      FV_Z_VEL_BLEND:
+        type: float
+        default: 0.7
+        decimal: 2
+        min: 0.0
+        max: 1.0
+        description:
+          short: 定点垂向速度融合权重
+          long: |
+            定点模式锁高时，z_deriv 在垂向速度反馈中的权重。
+            0 只使用 EKF vz，1 只使用与位置 Z 一致的 z_deriv；用于减小两者静态偏差造成的积分残留。
+
+      FV_Z_INT_MAX:
+        type: float
+        default: 0.8
+        unit: m/s^2
+        decimal: 2
+        min: 0.1
+        max: 3.0
+        description:
+          short: 定点垂向积分加速度上限
+          long: |
+            定点模式下 Z 轴速度积分项允许贡献的最大加速度绝对值。
+            限制只作用于积分分量，并保留补偿悬停推力模型偏差所需的慢速修正。
 
       FV_VEL_D_X:
         type: float
@@ -680,9 +690,9 @@ parameters:
 
       FV_REL_POS_X:
         type: float
-        default: 0.0
+        default: 0.037
         unit: m
-        decimal: 2
+        decimal: 3
         min: -20.0
         max: 20.0
         description:
@@ -692,9 +702,9 @@ parameters:
 
       FV_REL_POS_Y:
         type: float
-        default: 0.0
+        default: -0.403
         unit: m
-        decimal: 2
+        decimal: 3
         min: -20.0
         max: 20.0
         description:
@@ -704,15 +714,116 @@ parameters:
 
       FV_REL_POS_Z:
         type: float
-        default: 0.0
+        default: 0.087
         unit: m
-        decimal: 2
+        decimal: 3
         min: -20.0
         max: 20.0
         description:
           short: Offboard 期望相对下向位置
           long: |
             本机机体中心在目标机 body FRD 中的期望 Z 位置，正方向为目标机下方。
+
+      FV_REL_VXY_MAX:
+        type: float
+        default: 0.5
+        unit: m/s
+        decimal: 2
+        min: 0.05
+        max: 2.0
+        description:
+          short: Offboard 相对对接水平速度上限
+          long: |
+            使用相对位姿对接时，位置外环生成的 NED 水平期望速度模长上限。
+            该限制只作用于 Offboard 相对位姿分支，不改变定点、自稳或普通轨迹控制。
+
+      FV_REL_AXY_MAX:
+        type: float
+        default: 1.0
+        unit: m/s^2
+        decimal: 2
+        min: 0.1
+        max: 5.0
+        description:
+          short: Offboard 相对对接水平加速度上限
+          long: |
+            使用相对位姿对接时，速度内环生成的 NED 水平期望加速度模长上限。
+            与水平速度限制共同抑制近距离对接时的快速闭合和指令突变。
+
+      FV_REL_LOSS_T:
+        type: float
+        default: 0.1
+        unit: s
+        decimal: 2
+        min: 0.05
+        max: 1.0
+        description:
+          short: Offboard 相对位姿失效等待时间
+          long: |
+            相对位姿样本超过该时间未更新时判定无效并退出相对位姿控制。
+            该时间只允许覆盖很短的传输抖动，不应作为视觉姿态长时间保持窗口。
+
+      FV_REL_ATT_MODE:
+        type: enum
+        values:
+          0: IMU roll/pitch and relative yaw
+          1: Full relative attitude (legacy)
+        default: 0
+        min: 0
+        max: 1
+        description:
+          short: Offboard 相对姿态控制模式
+          long: |
+            0 使用 EKF/IMU 姿态保持机体 roll/pitch，仅用视觉相对姿态对齐 yaw。
+            1 保留旧版逻辑，roll/pitch/yaw 全部使用视觉相对姿态；仅建议受控测试使用。
+
+      FV_REL_ATT_GAIN:
+        type: float
+        default: 0.35
+        decimal: 2
+        min: 0.05
+        max: 1.0
+        description:
+          short: 视觉相对姿态增益缩放
+          long: |
+            对由视觉相对姿态产生的期望角速度进行缩放。
+            默认降低视觉外环带宽，减小相机、PnP 和传输延迟引起的相位滞后。
+
+      FV_REL_RATE_MAX:
+        type: float
+        default: 1.0
+        unit: rad/s
+        decimal: 2
+        min: 0.1
+        max: 3.84
+        description:
+          short: 对接姿态角速度上限
+          long: |
+            相对对接及目标丢失保持阶段的 roll/pitch/yaw 期望角速度逐轴上限。
+
+      FV_REL_ACC_MAX:
+        type: float
+        default: 4.0
+        unit: rad/s^2
+        decimal: 2
+        min: 0.5
+        max: 20.0
+        description:
+          short: 对接姿态角加速度上限
+          long: |
+            相对对接及目标丢失保持阶段的机体系期望角加速度逐轴上限。
+
+      FV_REL_MOT_DIF:
+        type: float
+        default: 0.25
+        decimal: 2
+        min: 0.05
+        max: 1.0
+        description:
+          short: 对接电机差动比例上限
+          long: |
+            将姿态控制产生的 roll/pitch/yaw 电机角速度差动限制为垂向基准角速度的给定比例。
+            只在相对对接或目标丢失保持阶段生效。
 
       FV_REL_ROLL:
         type: float

@@ -236,6 +236,13 @@ ROS 2 /fmu/in/target_relative_pose
 
 - 位置外环使用 `FV_REL_POS_X/Y/Z` 作为目标机 body FRD 中的期望相对位置；
 - 相对位置误差先从目标机 body FRD 旋转到 NED，再进入现有速度环和执行器分配；
+- `FV_REL_VXY_MAX` 对 NED 水平期望速度模长限幅，默认 `0.50 m/s`；
+- `FV_REL_AXY_MAX` 对 NED 水平期望加速度模长限幅，默认 `1.00 m/s²`；
+- `FV_REL_LOSS_T` 限制相对位姿样本最大年龄，默认 `0.10 s`，超时后退出相对位姿控制；
+- `FV_REL_ATT_MODE=0` 默认使用 EKF/IMU 保持 roll/pitch，仅用视觉相对姿态对齐 yaw；设置为 1 可恢复旧版完整相对姿态控制；
+- `FV_REL_ATT_GAIN`、`FV_REL_RATE_MAX` 和 `FV_REL_ACC_MAX` 分别限制视觉姿态外环增益、期望角速度和角加速度；
+- `FV_REL_MOT_DIF` 限制对接阶段姿态控制产生的电机差动；
+- 相对位姿丢失后，控制器在 Commander 完成模式回退前锁定丢失瞬间的 NED 位置和航向，并重置串级 PID；
 - 姿态外环使用 `FV_REL_ROLL/PITCH/YAW` 与相对四元数对应的欧拉角形成误差；
 - 相对控制期间不叠加 `trajectory_setpoint` 的速度和加速度前馈。
 
