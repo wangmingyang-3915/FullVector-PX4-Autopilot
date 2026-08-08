@@ -70,6 +70,7 @@ FullvectorControl::FullvectorControl() :
 	_current_command.Euler_angles = Vector3f(0.0f, 0.0f, 0.0f);
 }
 
+//模块退出时释放控制循环的性能监测计数器资源
 FullvectorControl::~FullvectorControl()
 {
 	perf_free(_loop_perf);
@@ -89,10 +90,12 @@ void FullvectorControl::resetPositionPidState()
 	_vel_error_int.zero();
 	_pid_state_initialized = false;
 
+	//解除三轴位置锁定
 	for (bool &axis_locked : _position_axis_locked) {
 		axis_locked = false;
 	}
 
+	//清除相对位姿模式记录+高度保持及垂直控制缓存
 	_position_outer_uses_relative_pose = false;
 	_posctl_z_hold_active = false;
 	_vertical_velocity_feedback = 0.0f;
@@ -105,6 +108,8 @@ void FullvectorControl::resetAttitudePidState()
 	_att_error_int.zero();
 	_ang_vel_error_int.zero();
 	_att_pid_state_initialized = false;
+
+	//清除相对姿态控制模式记录+丢弃旧航向目标
 	_attitude_outer_uses_relative_pose = false;
 	_posctl_yaw_sp_initialized = false;
 	_manual_yaw_sp_initialized = false;
