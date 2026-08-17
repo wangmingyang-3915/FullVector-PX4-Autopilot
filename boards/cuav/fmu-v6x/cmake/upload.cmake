@@ -1,6 +1,6 @@
 ############################################################################
 #
-#   Copyright (c) 2017 PX4 Development Team. All rights reserved.
+#   Copyright (c) 2025 PX4 Development Team. All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions
@@ -31,16 +31,19 @@
 #
 ############################################################################
 
-add_subdirectory(bmp280)
-add_subdirectory(bmp388)
-add_subdirectory(bmp581)
-add_subdirectory(dps310)
-add_subdirectory(lps22hb)
-#add_subdirectory(lps25h) # not ready for general inclusion
-add_subdirectory(lps33hw)
-#add_subdirectory(mpl3115a2) # not ready for general inclusion
-add_subdirectory(maiertek)
-add_subdirectory(ms5611)
-#add_subdirectory(tcbp001ta) # only for users who really need this
-add_subdirectory(invensense)
-add_subdirectory(goertek)
+
+set(PX4_FW_NAME ${PX4_BINARY_DIR}/${PX4_BOARD_VENDOR}_${PX4_BOARD_MODEL}_${PX4_BOARD_LABEL}.px4)
+
+add_custom_target(upload_skynode_usb
+	COMMAND ${PX4_SOURCE_DIR}/Tools/auterion/upload_skynode.sh --file=${PX4_FW_NAME}
+	DEPENDS ${PX4_FW_NAME}
+	COMMENT "Uploading PX4"
+	USES_TERMINAL
+)
+
+add_custom_target(upload_skynode_wifi
+	COMMAND ${PX4_SOURCE_DIR}/Tools/auterion/upload_skynode.sh --file=${PX4_FW_NAME} --wifi
+	DEPENDS ${PX4_FW_NAME}
+	COMMENT "Uploading PX4"
+	USES_TERMINAL
+)
