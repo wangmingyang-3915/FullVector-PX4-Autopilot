@@ -1,6 +1,6 @@
 ############################################################################
 #
-#   Copyright (c) 2017 PX4 Development Team. All rights reserved.
+#   Copyright (c) 2025 PX4 Development Team. All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions
@@ -30,17 +30,47 @@
 # POSSIBILITY OF SUCH DAMAGE.
 #
 ############################################################################
+if("${PX4_BOARD_LABEL}" STREQUAL  "bootloader")
+	add_compile_definitions(BOOTLOADER)
+	add_library(drivers_board
+		bootloader_main.c
+		init.cpp
+		usb.c
+		timer_config.cpp
+	)
+	target_link_libraries(drivers_board
+		PRIVATE
+			nuttx_arch # sdio
+			nuttx_drivers # sdio
+			px4_layer #gpio
+			arch_io_pins # iotimer
+			bootloader
+	)
+	target_include_directories(drivers_board PRIVATE ${PX4_SOURCE_DIR}/platforms/nuttx/src/bootloader/common)
 
-add_subdirectory(bmp280)
-add_subdirectory(bmp388)
-add_subdirectory(bmp581)
-add_subdirectory(dps310)
-add_subdirectory(lps22hb)
-#add_subdirectory(lps25h) # not ready for general inclusion
-add_subdirectory(lps33hw)
-#add_subdirectory(mpl3115a2) # not ready for general inclusion
-add_subdirectory(maiertek)
-add_subdirectory(ms5611)
-#add_subdirectory(tcbp001ta) # only for users who really need this
-add_subdirectory(invensense)
-add_subdirectory(goertek)
+else()
+	add_library(drivers_board
+		can.c
+		i2c.cpp
+		init.cpp
+		led.c
+		mtd.cpp
+		sdio.c
+		spi.cpp
+		timer_config.cpp
+		usb.c
+	)
+	add_dependencies(drivers_board arch_board_hw_info)
+
+	target_link_libraries(drivers_board
+		PRIVATE
+			arch_io_pins
+			arch_spi
+			arch_board_hw_info
+			drivers__led # drv_led_start
+			nuttx_arch # sdio
+			nuttx_drivers # sdio
+			px4_layer
+			platform_gpio_mcp23009
+	)
+endif()
