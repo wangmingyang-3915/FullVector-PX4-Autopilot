@@ -137,9 +137,11 @@ T_target_body = inverse(T_body_target)
 | `target_id` | `1` | AprilTag/目标编号 |
 | `output_topic` | `/fmu/in/target_relative_pose` | PX4 DDS 输入话题 |
 | `publish_rate_hz` | `60.0` | 发布频率 |
+| `offboard_heartbeat_rate_hz` | `20.0` | 独立 Offboard 心跳频率 |
 | `max_pose_age_s` | `0.2` | TF 最大允许年龄 |
 
-QoS 使用 `BEST_EFFORT + TRANSIENT_LOCAL + KEEP_LAST(1)`，降低连续视觉数据的排队延迟。
+QoS 使用 `BEST_EFFORT + VOLATILE + KEEP_LAST(1)`，与 PX4 DDS 输入端一致，并避免 Agent 重连后重放
+旧的位姿或 Offboard 心跳。
 
 桥接节点的保护逻辑：
 
@@ -149,6 +151,9 @@ QoS 使用 `BEST_EFFORT + TRANSIENT_LOCAL + KEEP_LAST(1)`，降低连续视觉�
 - 发布前归一化四元数。
 - ROS `geometry_msgs` 的 `(x,y,z,w)` 会转换为 PX4 的 `(w,x,y,z)`。
 - `timestamp_sample` 使用相机/TF 样本时间，`timestamp` 使用实际发布时刻。
+- 位姿发布和 Offboard 心跳使用独立定时器，TF 查询或视觉失效不会停止 20 Hz 心跳。
+- 首次取得有效位姿前心跳不声明控制级别；取得一次有效位姿后持续声明 `position=true`，视觉短时
+  丢失由飞控的相对位姿丢失保持处理，不再触发 Commander 的 Offboard 心跳丢失。
 
 实测发布频率：
 
@@ -238,11 +243,13 @@ ROS 2 /fmu/in/target_relative_pose
 - 相对位置误差先从目标机 body FRD 旋转到 NED，再进入现有速度环和执行器分配；
 - `FV_REL_VXY_MAX` 对 NED 水平期望速度模长限幅，默认 `0.50 m/s`；
 - `FV_REL_AXY_MAX` 对 NED 水平期望加速度模长限幅，默认 `1.00 m/s²`；
-- `FV_REL_LOSS_T` 限制相对位姿样本最大年龄，默认 `0.10 s`，超时后退出相对位姿控制；
+- `FV_REL_LOSS_T` 限制飞控本地相对位姿接收间隔，默认 `0.25 s`，超时后退出相对位姿控制；
 - `FV_REL_ATT_MODE=0` 默认使用 EKF/IMU 保持 roll/pitch，仅用视觉相对姿态对齐 yaw；设置为 1 可恢复旧版完整相对姿态控制；
-- `FV_REL_ATT_GAIN`、`FV_REL_RATE_MAX` 和 `FV_REL_ACC_MAX` 分别限制视觉姿态外环增益、期望角速度和角加速度；
+- `FV_REL_ATT_GAIN`、`FV_REL_RATE_MAX` 和 `FV_REL_ACC_MAX` 分别限制视觉姿态外环增益、期望角速度和
+  角加速度；后两者默认分别为 `0.50 rad/s` 和 `2.00 rad/s²`；
 - `FV_REL_MOT_DIF` 限制对接阶段姿态控制产生的电机差动；
-- 相对位姿丢失后，控制器在 Commander 完成模式回退前锁定丢失瞬间的 NED 位置和航向，并重置串级 PID；
+- 相对位姿丢失后，控制器锁定丢失瞬间的 NED 位置和航向，只清理已切换误差源的外环积分，保留
+  速度和角速度内环补偿；
 - 姿态外环使用 `FV_REL_ROLL/PITCH/YAW` 与相对四元数对应的欧拉角形成误差；
 - 相对控制期间不叠加 `trajectory_setpoint` 的速度和加速度前馈。
 
@@ -256,6 +263,8 @@ ROS 2 /fmu/in/target_relative_pose
 - 为 DDS 发送话题增加当前序列化函数签名的适配包装。
 - 使用 `uORB::DefaultQueueSize<T>::value` 代替当前树中不存在的 `orb_get_queue_size()`。
 - 给 `Timesync` 增加公开的 `converged()` 和 `reset()` 包装，避免调用私有实现。
+- 时间同步滤波器因 Agent 时钟跳变复位时保留上一拍有效偏移，避免 DDS 消息时间戳瞬间归零；未
+  收敛阶段以 100 Hz 有界重收敛，收敛后恢复 1 Hz 维护频率。
 - 按当前 uCDR 函数签名修正 `vehicle_command_ack` 序列化调用。
 - 移除当前旧 uORB 元数据不支持的 message-format request/response 运行时处理；这不影响本任务中编译期确定的 `TargetRelativePose` DDS 映射。
 

@@ -634,6 +634,7 @@ pids+=("$!")
     -p target_id:=1 \
     -p output_topic:=/uav1/fmu/in/target_relative_pose \
     -p publish_rate_hz:=60.0 \
+    -p offboard_heartbeat_rate_hz:=20.0 \
     -p max_pose_age_s:=0.2 &
 pids+=("$!")
 
@@ -981,6 +982,10 @@ ros2 topic echo /camera_info --once
 
 历史上曾出现服务长时间运行或系统时钟变化后，TF 样本年龄异常偏大的情况。重启 `apriltag-stack.service` 后恢复。新系统应保证开机时钟同步完成，并在发现相机时间戳大偏移时先重启视觉服务。
 
+相对位姿桥使用独立的 20 Hz Offboard 心跳定时器。首次获得有效目标后，即使短时遮挡导致位姿
+有效标志变为 `false`，心跳仍保持 `position=true`，由飞控执行相对位姿丢失保持；DDS 输入 QoS
+使用 `BEST_EFFORT + VOLATILE + KEEP_LAST(1)`，Agent 重连时不会重放旧心跳和旧位姿。
+
 ### 15.3 AprilTag
 
 ```bash
@@ -1006,6 +1011,7 @@ tag1 可检出
 
 ```bash
 ros2 topic hz /uav1/fmu/in/target_relative_pose
+ros2 topic hz /uav1/fmu/in/offboard_control_mode
 ros2 topic echo /uav1/fmu/in/target_relative_pose --once
 ros2 run tf2_ros tf2_echo target_body_frd body_frd
 ```
@@ -1013,6 +1019,7 @@ ros2 run tf2_ros tf2_echo target_body_frd body_frd
 核对：
 
 - 发布约 60 Hz；
+- Offboard 心跳约 20 Hz，目标短时遮挡时不中断；
 - 标签可见且 TF 新鲜时两个 valid 为 `true`；
 - 遮挡超过 200 ms 后两个 valid 变为 `false`；
 - 恢复标签后自动有效；

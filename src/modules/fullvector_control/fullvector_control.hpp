@@ -309,6 +309,7 @@ private:
 	// STAB 航向目标。
 	float _manual_yaw_sp{0.0f};
 	bool _manual_yaw_sp_initialized{false};
+	bool _manual_yaw_stick_active{false};
 	actuator_motors_s _last_motor_output{};
 	actuator_servos_s _last_tilt_output{};
 	bool _last_actuator_output_valid{false};

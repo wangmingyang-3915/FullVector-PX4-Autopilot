@@ -60,9 +60,17 @@ static void on_time(uxrSession *session, int64_t current_time, int64_t client_tr
 {
 	if (args) {
 		Timesync *timesync = static_cast<Timesync *>(args);
+		const int64_t previous_time_offset = session->time_offset;
 		timesync->update(current_time / 1000, agent_receive_timestamp, originate_timestamp);
 
-		session->time_offset = -timesync->offset() * 1000; // us -> ns
+		// 时间跳变触发滤波器复位的当拍 offset 为 0，继续保留上一拍偏移，避免所有 DDS 时间戳瞬间跳变。
+		// 下一份有效样本会建立新的非零估计，收敛后再由滤波结果平滑更新。
+		if (timesync->converged() || (timesync->offset() != 0) || (previous_time_offset == 0)) {
+			session->time_offset = -timesync->offset() * 1000; // us -> ns
+
+		} else {
+			session->time_offset = previous_time_offset;
+		}
 	}
 }
 
@@ -386,6 +394,7 @@ void UxrceddsClient::deleteSession(uxrSession *session)
 
 	_last_payload_tx_rate = 0;
 	_timesync.reset();
+	_timesync_converged = false;
 }
 
 UxrceddsClient::~UxrceddsClient()
@@ -619,12 +628,13 @@ void UxrceddsClient::run()
 			// check if there are available replies
 			process_replies();
 
-			// time sync session
-			if (_synchronize_timestamps && hrt_elapsed_time(&last_sync_session) > 1_s) {
+			// 已收敛时每秒维护一次时间同步；时间跳变后以 100 Hz 重新收敛，避免控制循环每拍发送同步请求。
+			const hrt_abstime sync_interval = _timesync.converged() ? 1_s : 10_ms;
+
+			if (_synchronize_timestamps && hrt_elapsed_time(&last_sync_session) > sync_interval) {
+				last_sync_session = hrt_absolute_time();
 
 				if (uxr_sync_session(&session, 10) && _timesync.converged()) {
-					last_sync_session = hrt_absolute_time();
-
 					if (_param_uxrce_dds_syncc.get() > 0) {
 						syncSystemClock(&session);
 					}
