@@ -28,6 +28,7 @@ class TargetRelativePoseBridge(Node):
             '',
         )
         self.declare_parameter('publish_rate_hz', 60.0)
+        self.declare_parameter('offboard_heartbeat_rate_hz', 20.0)
         self.declare_parameter('max_pose_age_s', 0.2)
         # Do not republish stale orientation into the fast attitude loop by default.
         self.declare_parameter('dropout_grace_s', 0.0)
@@ -60,13 +61,18 @@ class TargetRelativePoseBridge(Node):
                 f'{output_topic_prefix}/offboard_control_mode'
             )
         publish_rate_hz = float(self.get_parameter('publish_rate_hz').value)
+        offboard_heartbeat_rate_hz = float(
+            self.get_parameter('offboard_heartbeat_rate_hz').value
+        )
         self._max_pose_age_ns = int(float(self.get_parameter('max_pose_age_s').value) * 1e9)
         self._dropout_grace_ns = int(
             float(self.get_parameter('dropout_grace_s').value) * 1e9
         )
 
-        if publish_rate_hz <= 0.0:
-            raise ValueError('publish_rate_hz must be positive')
+        if publish_rate_hz <= 0.0 or offboard_heartbeat_rate_hz <= 0.0:
+            raise ValueError(
+                'publish_rate_hz and offboard_heartbeat_rate_hz must be positive'
+            )
 
         if self._max_pose_age_ns < 0 or self._dropout_grace_ns < 0:
             raise ValueError('max_pose_age_s and dropout_grace_s must be non-negative')
@@ -90,7 +96,7 @@ class TargetRelativePoseBridge(Node):
 
         qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
-            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            durability=DurabilityPolicy.VOLATILE,
             history=HistoryPolicy.KEEP_LAST,
             depth=1,
         )
@@ -106,7 +112,12 @@ class TargetRelativePoseBridge(Node):
         self._active_target_id: Optional[int] = None
         self._last_pose = None
         self._holding_last_pose = False
-        self._timer = self.create_timer(1.0 / publish_rate_hz, self._publish_pose)
+        self._offboard_ready = False
+        self._pose_timer = self.create_timer(1.0 / publish_rate_hz, self._publish_pose)
+        self._heartbeat_timer = self.create_timer(
+            1.0 / offboard_heartbeat_rate_hz,
+            self._publish_offboard_heartbeat,
+        )
 
         target_description = ', '.join(
             f'{target_id}:{target_frame}' for target_id, target_frame in self._targets
@@ -115,7 +126,8 @@ class TargetRelativePoseBridge(Node):
             f'Publishing pose of {self._parent_frame} expressed in '
             f'the freshest target frame on {output_topic}; targets=[{target_description}], '
             f'dropout_grace={self._dropout_grace_ns / 1e9:.3f} s; '
-            f'Offboard heartbeat on {offboard_control_mode_topic}'
+            f'Offboard heartbeat={offboard_heartbeat_rate_hz:.1f} Hz '
+            f'on {offboard_control_mode_topic}'
         )
 
     def _new_message(self, now_us: int, target_id: int) -> TargetRelativePose:
@@ -132,13 +144,13 @@ class TargetRelativePoseBridge(Node):
     def _publish_output(self, msg: TargetRelativePose) -> None:
         self._publisher.publish(msg)
 
+    def _publish_offboard_heartbeat(self) -> None:
         # Commander only accepts Offboard when it receives a recent
         # OffboardControlMode with at least one control level enabled.
-        # A valid full-vector relative pose uses the position control level.
-        pose_valid = bool(msg.position_valid and msg.orientation_valid)
+        # 首次获得有效目标后持续声明位置控制级别，短时视觉失效交给飞控的丢失保持处理。
         offboard_mode = OffboardControlMode()
-        offboard_mode.timestamp = msg.timestamp
-        offboard_mode.position = pose_valid
+        offboard_mode.timestamp = self.get_clock().now().nanoseconds // 1000
+        offboard_mode.position = self._offboard_ready
         offboard_mode.velocity = False
         offboard_mode.acceleration = False
         offboard_mode.attitude = False
@@ -270,6 +282,7 @@ class TargetRelativePoseBridge(Node):
         msg.q = quaternion_wxyz
         msg.position_valid = True
         msg.orientation_valid = True
+        self._offboard_ready = True
         self._set_valid_state(True, target_id=target_id)
         self._publish_output(msg)
 

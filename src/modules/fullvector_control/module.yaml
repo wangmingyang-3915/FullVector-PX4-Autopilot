@@ -189,11 +189,12 @@ parameters:
         default: 0.5
         decimal: 2
         min: 0.0
-        max: 1.0
+        max: 0.5
         description:
           short: 定点垂向积分增益缩放
           long: |
-            仅在定点模式中缩放 FV_VEL_I_Z，默认 0.5 使有效垂向积分增益由 2.0 降为 1.0。
+            仅在定点模式中缩放 FV_VEL_I_Z，最高 0.5 使有效垂向积分增益不超过全局值的一半。
+            运行时同样执行上限保护，避免旧参数中保存的 1.0 继续生效。
             Offboard、相对对接及其他控制模式继续使用未缩放的 FV_VEL_I_Z。
 
       FV_Z_VEL_BLEND:
@@ -210,16 +211,17 @@ parameters:
 
       FV_Z_INT_MAX:
         type: float
-        default: 0.8
+        default: 0.6
         unit: m/s^2
         decimal: 2
         min: 0.1
-        max: 3.0
+        max: 0.6
         description:
           short: 定点垂向积分加速度上限
           long: |
             定点模式下 Z 轴速度积分项允许贡献的最大加速度绝对值。
-            限制只作用于积分分量，并保留补偿悬停推力模型偏差所需的慢速修正。
+            最高限制为 0.6 m/s^2；松杆重新锁高时最多保留该上限的一半，
+            避免手动升降阶段的积分饱和直接带入锁高制动。
 
       FV_VEL_D_X:
         type: float
@@ -576,15 +578,16 @@ parameters:
 
       FV_YAW_MIX_WT:
         type: float
-        default: 0.6
+        default: 0.5
         decimal: 3
         min: 0.0
         max: 1.0
         description:
-          short: yaw 电机差动权重
+          short: yaw 电机差动力矩权重
           long: |
-            yaw 角加速度通过电机差动混合的权重。
-            0 表示不使用电机差动 yaw 分量，1 表示按当前模型完全使用该分量。
+            yaw 期望力矩中由电机反扭矩差动承担的比例，剩余部分由四舵机公共倾转承担。
+            默认 0.5 表示两条通道各承担 50%，可通过地面站在 0 到 1 之间在线调整。
+            0 表示 yaw 全部使用公共倾转，1 表示 yaw 全部使用电机差动。
 
       FV_INERTIA_XX:
         type: float
@@ -752,16 +755,17 @@ parameters:
 
       FV_REL_LOSS_T:
         type: float
-        default: 0.1
+        default: 0.25
         unit: s
         decimal: 2
-        min: 0.05
+        min: 0.1
         max: 1.0
         description:
           short: Offboard 相对位姿失效等待时间
           long: |
             相对位姿样本超过该时间未更新时判定无效并退出相对位姿控制。
-            该时间只允许覆盖很短的传输抖动，不应作为视觉姿态长时间保持窗口。
+            默认 0.25 秒用于覆盖相机、PnP、DDS 和时间同步链路的正常延迟与短时抖动，
+            不应作为视觉姿态长时间保持窗口。
 
       FV_REL_ATT_MODE:
         type: enum
@@ -791,7 +795,7 @@ parameters:
 
       FV_REL_RATE_MAX:
         type: float
-        default: 1.0
+        default: 0.5
         unit: rad/s
         decimal: 2
         min: 0.1
@@ -800,10 +804,11 @@ parameters:
           short: 对接姿态角速度上限
           long: |
             相对对接及目标丢失保持阶段的 roll/pitch/yaw 期望角速度逐轴上限。
+            默认使用 0.5 rad/s，降低首次闭环和目标重新捕获时的偏航响应速度。
 
       FV_REL_ACC_MAX:
         type: float
-        default: 4.0
+        default: 2.0
         unit: rad/s^2
         decimal: 2
         min: 0.5
@@ -812,6 +817,7 @@ parameters:
           short: 对接姿态角加速度上限
           long: |
             相对对接及目标丢失保持阶段的机体系期望角加速度逐轴上限。
+            默认使用 2.0 rad/s^2，抑制误差源切换和视觉跳变造成的瞬时力矩需求。
 
       FV_REL_MOT_DIF:
         type: float
@@ -822,7 +828,7 @@ parameters:
         description:
           short: 对接电机差动比例上限
           long: |
-            将姿态控制产生的 roll/pitch/yaw 电机角速度差动限制为垂向基准角速度的给定比例。
+            将姿态控制产生的 roll/pitch/yaw 电机角速度平方差动限制为垂向基准角速度平方的给定比例。
             只在相对对接或目标丢失保持阶段生效。
 
       FV_REL_ROLL:
