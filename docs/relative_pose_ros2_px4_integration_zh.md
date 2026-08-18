@@ -139,6 +139,12 @@ T_target_body = inverse(T_body_target)
 | `publish_rate_hz` | `60.0` | 发布频率 |
 | `offboard_heartbeat_rate_hz` | `20.0` | 独立 Offboard 心跳频率 |
 | `max_pose_age_s` | `0.2` | TF 最大允许年龄 |
+| `dropout_grace_s` | `0.0` | 允许桥接端重发最后位姿的短时窗口，默认关闭 |
+| `offboard_ready_timeout_s` | `1.5` | 无有效位姿后撤销 Offboard position readiness 的最长时间 |
+| `position_jump_m` | `0.2` | 相邻有效位置的基础跳变门限 |
+| `position_rate_limit_m_s` | `3.0` | 随采样间隔扩展位置门限的速度项 |
+| `orientation_jump_rad` | `0.2` | 相邻有效姿态的基础旋转跳变门限 |
+| `orientation_rate_limit_rad_s` | `2.0` | 随采样间隔扩展姿态门限的角速度项 |
 
 QoS 使用 `BEST_EFFORT + VOLATILE + KEEP_LAST(1)`，与 PX4 DDS 输入端一致，并避免 Agent 重连后重放
 旧的位姿或 Offboard 心跳。
@@ -148,12 +154,15 @@ QoS 使用 `BEST_EFFORT + VOLATILE + KEEP_LAST(1)`，与 PX4 DDS 输入端一致
 - TF 不存在时发布无效消息，不复用旧位姿伪装成新数据。
 - TF 超过 200 ms 时将 `position_valid` 和 `orientation_valid` 置为 `false`。
 - 拒绝 NaN、Inf 和零范数四元数。
+- 拒绝超过“基础跳变 + 运动速率 × 采样间隔”的位置或姿态异常值。
+- 活动对接会话锁定目标 ID，防止多目标检测在单帧内切换控制对象。
 - 发布前归一化四元数。
 - ROS `geometry_msgs` 的 `(x,y,z,w)` 会转换为 PX4 的 `(w,x,y,z)`。
 - `timestamp_sample` 使用相机/TF 样本时间，`timestamp` 使用实际发布时刻。
 - 位姿发布和 Offboard 心跳使用独立定时器，TF 查询或视觉失效不会停止 20 Hz 心跳。
-- 首次取得有效位姿前心跳不声明控制级别；取得一次有效位姿后持续声明 `position=true`，视觉短时
-  丢失由飞控的相对位姿丢失保持处理，不再触发 Commander 的 Offboard 心跳丢失。
+- 首次取得有效位姿前心跳不声明控制级别；取得有效位姿后声明 `position=true`，视觉短时丢失由
+  飞控保持。连续 `offboard_ready_timeout_s` 没有接受新位姿后撤销该声明并解锁目标 ID，避免 readiness
+  永久锁存；飞控侧同时以 `FV_REL_HOLD_T` 限制保持时间并请求回退 POSCTL。
 
 实测发布频率：
 
@@ -431,7 +440,10 @@ uxrce_dds_client status
 listener target_relative_pose 5
 ```
 
-`listener` 输出应与 Jetson `ros2 topic echo` 的位置、四元数和有效标志一致。随后遮挡靶标超过 200 ms，确认 valid 变为 false；恢复识别后应自动回到 true。
+`listener` 输出应与 Jetson `ros2 topic echo` 的位置、四元数和有效标志一致。随后遮挡靶标超过 200 ms，
+确认 valid 变为 false；持续遮挡超过 `offboard_ready_timeout_s` 时确认 Offboard readiness 被撤销。恢复识别
+后应自动回到 true。飞控端再用 `listener fullvector_control_status` 检查拒绝原因、接收年龄、失联持续时间
+和分配饱和字段。
 
 只有在静态台架上完成坐标方向、断流、重连和超时测试后，才应把该位姿接入闭环飞行控制。
 

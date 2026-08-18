@@ -189,12 +189,12 @@ parameters:
         default: 0.5
         decimal: 2
         min: 0.0
-        max: 0.5
+        max: 1.0
         description:
           short: 定点垂向积分增益缩放
           long: |
-            仅在定点模式中缩放 FV_VEL_I_Z，最高 0.5 使有效垂向积分增益不超过全局值的一半。
-            运行时同样执行上限保护，避免旧参数中保存的 1.0 继续生效。
+            仅在定点模式中缩放 FV_VEL_I_Z；0 关闭定点垂向积分，1 使用完整全局垂向积分增益。
+            参数可通过地面站在 0 到 1 之间在线调整。
             Offboard、相对对接及其他控制模式继续使用未缩放的 FV_VEL_I_Z。
 
       FV_Z_VEL_BLEND:
@@ -222,6 +222,19 @@ parameters:
             定点模式下 Z 轴速度积分项允许贡献的最大加速度绝对值。
             最高限制为 0.6 m/s^2；松杆重新锁高时最多保留该上限的一半，
             避免手动升降阶段的积分饱和直接带入锁高制动。
+
+      FV_AW_GAIN:
+        type: float
+        default: 1.0
+        unit: 1/s
+        decimal: 2
+        min: 0.0
+        max: 10.0
+        description:
+          short: 分配饱和反算抗积分饱和增益
+          long: |
+            使用分配器实际可实现控制量与请求控制量之差，反算修正速度环和角速度环积分。
+            0 关闭反算，值越大积分器从执行器饱和中退出越快。
 
       FV_VEL_D_X:
         type: float
@@ -766,6 +779,67 @@ parameters:
             相对位姿样本超过该时间未更新时判定无效并退出相对位姿控制。
             默认 0.25 秒用于覆盖相机、PnP、DDS 和时间同步链路的正常延迟与短时抖动，
             不应作为视觉姿态长时间保持窗口。
+
+      FV_REL_HOLD_T:
+        type: float
+        default: 1.5
+        unit: s
+        decimal: 2
+        min: 0.5
+        max: 10.0
+        description:
+          short: 对接目标丢失最长保持时间
+          long: |
+            对接会话中目标丢失后，允许保持丢失瞬间 NED 位置和航向的最长时间。
+            超时后锁存本次对接中止并请求切回 POSCTL；离开 OFFBOARD 后才允许重新开始对接。
+
+      FV_REL_POS_JMP:
+        type: float
+        default: 0.2
+        unit: m
+        decimal: 2
+        min: 0.02
+        max: 2.0
+        description:
+          short: 相对位置单帧基础跳变门限
+          long: |
+            相邻有效相对位置允许的基础跳变量。实际门限还会叠加 FV_REL_VEL_G 乘以本地接收间隔。
+
+      FV_REL_VEL_G:
+        type: float
+        default: 3.0
+        unit: m/s
+        decimal: 2
+        min: 0.1
+        max: 20.0
+        description:
+          short: 相对位置运动学门控速度
+          long: |
+            用于随样本间隔扩展相对位置跳变门限；超过基础跳变加该速度乘时间的样本会被拒绝。
+
+      FV_REL_ANG_JMP:
+        type: float
+        default: 0.2
+        unit: rad
+        decimal: 2
+        min: 0.02
+        max: 1.57
+        description:
+          short: 相对姿态单帧基础跳变门限
+          long: |
+            相邻有效相对四元数允许的基础旋转角跳变量。实际门限还会叠加 FV_REL_RATE_G 乘以接收间隔。
+
+      FV_REL_RATE_G:
+        type: float
+        default: 2.0
+        unit: rad/s
+        decimal: 2
+        min: 0.1
+        max: 20.0
+        description:
+          short: 相对姿态运动学门控角速度
+          long: |
+            用于随样本间隔扩展相对姿态跳变门限；超过门限的四元数样本会被拒绝。
 
       FV_REL_ATT_MODE:
         type: enum
