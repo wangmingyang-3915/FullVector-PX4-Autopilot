@@ -49,6 +49,7 @@
 #include <lib/matrix/matrix/math.hpp>
 #include <px4_platform_common/defines.h>
 #include <px4_platform_common/log.h>
+#include <commander/px4_custom_mode.h>
 
 using namespace time_literals;
 using namespace matrix;
@@ -100,6 +101,13 @@ void FullvectorControl::resetPositionPidState()
 	_posctl_z_hold_active = false;
 	_vertical_velocity_feedback = 0.0f;
 	_vertical_velocity_integral_acceleration = 0.0f;
+	// 清除位置通道的分配残差和饱和记录。
+	_position_anti_windup_active = false;
+	_allocation_accel_residual.zero();
+
+	for (bool &saturated : _position_allocation_saturated) {
+		saturated = false;
+	}
 }
 
 void FullvectorControl::resetAttitudePidState()
@@ -114,6 +122,13 @@ void FullvectorControl::resetAttitudePidState()
 	_posctl_yaw_sp_initialized = false;
 	_manual_yaw_sp_initialized = false;
 	_manual_yaw_stick_active = false;
+	// 清除姿态通道的分配残差和饱和记录。
+	_attitude_anti_windup_active = false;
+	_allocation_ang_acc_residual.zero();
+
+	for (bool &saturated : _attitude_allocation_saturated) {
+		saturated = false;
+	}
 }
 
 void FullvectorControl::resetPidState()
@@ -194,24 +209,164 @@ void FullvectorControl::publishFullvectorControlStatus(bool fullvector_active, b
 	status.relative_pose_valid = _target_relative_pose_valid;
 	status.relative_pose_active = _relative_pose_active;
 	status.relative_pose_loss_hold = _relative_pose_loss_hold;
+	status.relative_pose_hold_timed_out = _relative_pose_hold_timed_out;
 	status.relative_attitude_mode = static_cast<uint8_t>(math::constrain(_param_fv_rel_att_mode.get(),
 					int32_t{0}, int32_t{1}));
-	status.target_id = _target_relative_pose.target_id;
-	status.target_pose_timestamp_sample = _target_relative_pose.timestamp_sample;
+	status.target_id = _target_pose_target_id;
+	status.target_pose_timestamp_sample = _target_pose_timestamp_sample;
+	status.target_pose_time_offset = _target_pose_time_offset;
+	status.target_pose_receive_age = _target_pose_receive_age;
+	status.relative_pose_loss_duration = _relative_pose_loss_duration;
+	status.relative_pose_reject_reason = _relative_pose_reject_reason;
+	status.relative_pose_reject_count = _relative_pose_reject_count;
 
 	// 计算相对位姿样本年龄。
-	if ((_target_relative_pose.timestamp_sample > 0)
-	    && (_target_relative_pose.timestamp_sample <= status.timestamp)) {
-		status.target_pose_age = status.timestamp - _target_relative_pose.timestamp_sample;
+	if ((_target_pose_timestamp_sample > 0)
+	    && (_target_pose_timestamp_sample <= status.timestamp)) {
+		status.target_pose_age = status.timestamp - _target_pose_timestamp_sample;
 	}
 
 	//记录定点模式下垂向保持控制诊断量
 	status.posctl_z_hold_active = _posctl_z_hold_active;
 	status.vertical_velocity_feedback = _vertical_velocity_feedback;
 	status.vertical_velocity_integral_acceleration = _vertical_velocity_integral_acceleration;
+	// 记录分配器饱和、实际能力和 anti-windup 状态。
+	status.allocation_saturation_flags = _allocation_saturation_flags;
+	status.allocation_differential_scale = _allocation_differential_scale;
+	status.position_anti_windup_active = _position_anti_windup_active;
+	status.attitude_anti_windup_active = _attitude_anti_windup_active;
+
+	for (int i = 0; i < 3; i++) {
+		status.acceleration_setpoint[i] = _pos_acc_cmd(i);
+		status.acceleration_achieved[i] = _allocation_accel_achieved(i);
+		status.angular_acceleration_setpoint[i] = _att_ang_acc_cmd(i);
+		status.angular_acceleration_achieved[i] = _allocation_ang_acc_achieved(i);
+	}
 
 	//发布状态消息
 	_fullvector_control_status_pub.publish(status);
+}
+
+// 对接失联保持超时后，限频请求切回 POSCTL。
+void FullvectorControl::requestPositionControlFallback(hrt_abstime now)
+{
+	constexpr hrt_abstime retry_interval = 500_ms;
+
+	if ((_last_fallback_request != 0) && ((now - _last_fallback_request) < retry_interval)) {
+		return;
+	}
+
+	vehicle_command_s command{};
+	command.timestamp = now;
+	command.param1 = 1.0f; // 启用 PX4 自定义主模式字段。
+	command.param2 = static_cast<float>(PX4_CUSTOM_MAIN_MODE_POSCTL);
+	command.command = vehicle_command_s::VEHICLE_CMD_DO_SET_MODE;
+	command.source_system = _vehicle_status.system_id;
+	command.target_system = _vehicle_status.system_id;
+	command.source_component = _vehicle_status.component_id;
+	command.target_component = _vehicle_status.component_id;
+	command.from_external = false;
+	_vehicle_command_pub.publish(command);
+	_last_fallback_request = now;
+}
+
+// 检查相对位姿标志、数值范围和相邻样本跳变。
+bool FullvectorControl::validateRelativePoseSample(const target_relative_pose_s &candidate, hrt_abstime now)
+{
+	// 先保存原始样本时间信息，便于记录被拒绝样本。
+	uint8_t reject_reason = fullvector_control_status_s::REL_POSE_REJECT_NONE;
+	_target_pose_timestamp_sample = candidate.timestamp_sample;
+	_target_pose_target_id = candidate.target_id;
+	_target_pose_time_offset = (candidate.timestamp_sample > 0) ?
+				   static_cast<int64_t>(candidate.timestamp_sample) - static_cast<int64_t>(now) : 0;
+
+	// 检查发布端有效标志。
+	if (!candidate.position_valid || !candidate.orientation_valid) {
+		reject_reason |= fullvector_control_status_s::REL_POSE_REJECT_FLAGS;
+	}
+
+	// 拒绝非有限位置或四元数。
+	const Vector3f candidate_position(candidate.position);
+	const bool position_finite = candidate_position.isAllFinite();
+	const bool quaternion_finite = PX4_ISFINITE(candidate.q[0]) && PX4_ISFINITE(candidate.q[1])
+				       && PX4_ISFINITE(candidate.q[2]) && PX4_ISFINITE(candidate.q[3]);
+
+	if (!position_finite || !quaternion_finite) {
+		reject_reason |= fullvector_control_status_s::REL_POSE_REJECT_NONFINITE;
+	}
+
+	// 四元数必须接近单位模长。
+	const float quaternion_norm_sq = candidate.q[0] * candidate.q[0] + candidate.q[1] * candidate.q[1]
+					 + candidate.q[2] * candidate.q[2] + candidate.q[3] * candidate.q[3];
+
+	if (!quaternion_finite || (fabsf(quaternion_norm_sq - 1.0f) >= 0.05f)) {
+		reject_reason |= fullvector_control_status_s::REL_POSE_REJECT_QUATERNION;
+	}
+
+	const bool basic_valid = reject_reason == fullvector_control_status_s::REL_POSE_REJECT_NONE;
+
+	// 基础检查通过后再执行目标锁定和运动学跳变门控。
+	if (basic_valid && (_last_accepted_target_pose_update != 0)) {
+		const float sample_dt = math::constrain((now - _last_accepted_target_pose_update) / 1e6f, 0.0f, 1.0f);
+
+		if (_relative_pose_session_active && (candidate.target_id != _target_relative_pose.target_id)) {
+			reject_reason |= fullvector_control_status_s::REL_POSE_REJECT_TARGET_CHANGE;
+
+		} else if (candidate.target_id == _target_relative_pose.target_id) {
+			const float position_limit = math::max(_param_fv_rel_pos_jump.get(), 0.02f)
+						   + math::max(_param_fv_rel_velocity_gate.get(), 0.1f) * sample_dt;
+
+			if ((candidate_position - Vector3f(_target_relative_pose.position)).norm() > position_limit) {
+				reject_reason |= fullvector_control_status_s::REL_POSE_REJECT_POSITION_JUMP;
+			}
+
+			const float quaternion_dot = fabsf(candidate.q[0] * _target_relative_pose.q[0]
+							 + candidate.q[1] * _target_relative_pose.q[1]
+							 + candidate.q[2] * _target_relative_pose.q[2]
+							 + candidate.q[3] * _target_relative_pose.q[3]);
+			const float attitude_jump = 2.0f * acosf(math::constrain(quaternion_dot, 0.0f, 1.0f));
+			const float attitude_limit = math::max(_param_fv_rel_angle_jump.get(), 0.02f)
+						   + math::max(_param_fv_rel_rate_gate.get(), 0.1f) * sample_dt;
+
+			if (attitude_jump > attitude_limit) {
+				reject_reason |= fullvector_control_status_s::REL_POSE_REJECT_ATTITUDE_JUMP;
+			}
+		}
+	}
+
+	// 累计拒绝原因；只有完全通过的样本才替换控制输入。
+	_relative_pose_reject_reason = reject_reason;
+
+	if (reject_reason != fullvector_control_status_s::REL_POSE_REJECT_NONE) {
+		_relative_pose_reject_count++;
+		return false;
+	}
+
+	_target_relative_pose = candidate;
+	_last_accepted_target_pose_update = now;
+	return true;
+}
+
+// 使用受限输出与请求输出的差值反算修正积分状态。
+bool FullvectorControl::applyAntiWindup(Vector3f &integral_state, const Vector3f &output_residual,
+					const Vector3f &integral_gain, const bool saturated[3], float dt)
+{
+	const float anti_windup_gain = math::constrain(_param_fv_aw_gain.get(), 0.0f, 10.0f);
+	bool active = false;
+
+	if (!PX4_ISFINITE(dt) || (dt <= FLT_EPSILON) || (anti_windup_gain <= FLT_EPSILON)) {
+		return false;
+	}
+
+	// 仅在对应轴饱和且积分增益有效时执行反算。
+	for (int i = 0; i < 3; i++) {
+		if (saturated[i] && PX4_ISFINITE(output_residual(i)) && (fabsf(integral_gain(i)) > FLT_EPSILON)) {
+			integral_state(i) += anti_windup_gain * output_residual(i) / integral_gain(i) * dt;
+			active = true;
+		}
+	}
+
+	return active;
 }
 
 bool FullvectorControl::evaluateNativeControllerRequest(float &rc_switch_value, bool &rc_switch_valid)
@@ -519,6 +674,7 @@ void FullvectorControl::Run()
 	ScheduleDelayed(5_ms);
 
 	parameters_update(false);
+	const hrt_abstime now = hrt_absolute_time();
 
 	// 更新模式和轨迹输入。
 	_vehicle_control_mode_sub.update(&_control_mode);
@@ -529,36 +685,21 @@ void FullvectorControl::Run()
 	const hrt_abstime relative_pose_timeout = static_cast<hrt_abstime>(
 				math::max(_param_fv_rel_loss_t.get(), 0.1f) * 1_s);
 
-	if (_target_relative_pose_sub.update(&_target_relative_pose)) {
-		_last_target_relative_pose_update = hrt_absolute_time();
+	// 使用候选缓存，避免异常消息覆盖上一份有效控制输入。
+	target_relative_pose_s relative_pose_candidate{};
 
-		// 位姿新鲜度以飞控本地接收时间为准，避免 DDS 时间同步跳变把连续到达的样本误判为过期。
-		// 机载桥接端负责按原始 TF 时间设置有效标志，飞控端仍通过接收超时防止链路中断后继续使用旧值。
-
-		// 位置必须有限，四元数必须接近单位模长。
-		const bool position_finite = PX4_ISFINITE(_target_relative_pose.position[0])
-					     && PX4_ISFINITE(_target_relative_pose.position[1])
-					     && PX4_ISFINITE(_target_relative_pose.position[2]);
-		const bool quaternion_finite = PX4_ISFINITE(_target_relative_pose.q[0])
-					       && PX4_ISFINITE(_target_relative_pose.q[1])
-					       && PX4_ISFINITE(_target_relative_pose.q[2])
-					       && PX4_ISFINITE(_target_relative_pose.q[3]);
-		const float quaternion_norm_sq = _target_relative_pose.q[0] * _target_relative_pose.q[0]
-						 + _target_relative_pose.q[1] * _target_relative_pose.q[1]
-						 + _target_relative_pose.q[2] * _target_relative_pose.q[2]
-						 + _target_relative_pose.q[3] * _target_relative_pose.q[3];
-		const bool quaternion_normalized = quaternion_finite && (fabsf(quaternion_norm_sq - 1.0f) < 0.05f);
-
-		_target_relative_pose_valid = _target_relative_pose.position_valid
-					      && _target_relative_pose.orientation_valid
-					      && position_finite
-					      && quaternion_normalized;
+	if (_target_relative_pose_sub.update(&relative_pose_candidate)) {
+		_last_target_relative_pose_update = now;
+		_target_relative_pose_valid = validateRelativePoseSample(relative_pose_candidate, now);
 	}
 
-	// 接收端长时间无更新时强制使相对位姿失效。
+	_target_pose_receive_age = (_last_target_relative_pose_update > 0) ? now - _last_target_relative_pose_update : 0;
+
+	// 接收端长时间无消息时强制使相对位姿失效；显式无效或异常样本会立即使其失效。
 	if ((_last_target_relative_pose_update == 0)
-	    || (hrt_elapsed_time(&_last_target_relative_pose_update) > relative_pose_timeout)) {
+	    || (_target_pose_receive_age > relative_pose_timeout)) {
 		_target_relative_pose_valid = false;
+		_relative_pose_reject_reason = fullvector_control_status_s::REL_POSE_REJECT_RX_TIMEOUT;
 	}
 
 	float rc_switch_value = NAN;
@@ -573,23 +714,50 @@ void FullvectorControl::Run()
 	const bool offboard_mode = (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_OFFBOARD);
 	// 固定本周期的相对位姿状态快照。
 	const bool relative_pose_was_active = _relative_pose_active;
-	_relative_pose_active = offboard_mode && _target_relative_pose_valid;
+	_relative_pose_active = offboard_mode && _target_relative_pose_valid && !_relative_pose_hold_timed_out;
 	_relative_pose_just_lost = offboard_mode && relative_pose_was_active && !_relative_pose_active;
 
 	// 记录相对位姿会话以触发失联保持。
 	if (!offboard_mode) {
 		_relative_pose_session_active = false;
 		_relative_pose_hold_initialized = false;
+		_relative_pose_hold_timed_out = false;
+		_relative_pose_loss_started = 0;
+		_relative_pose_loss_duration = 0;
+		_last_fallback_request = 0;
 
 	} else if (_relative_pose_active) {
 		_relative_pose_session_active = true;
+		_relative_pose_loss_started = 0;
+		_relative_pose_loss_duration = 0;
 	}
 
 	if (_relative_pose_just_lost) {
 		_relative_pose_hold_initialized = false;
+		_relative_pose_loss_started = now;
 	}
 
-	_relative_pose_loss_hold = offboard_mode && _relative_pose_session_active && !_relative_pose_active;
+	// 对接会话失联后累计保持时间，并在超时后锁存中止状态。
+	if (offboard_mode && _relative_pose_session_active && !_relative_pose_active) {
+		if (_relative_pose_loss_started == 0) {
+			_relative_pose_loss_started = now;
+		}
+
+		_relative_pose_loss_duration = now - _relative_pose_loss_started;
+		const hrt_abstime maximum_hold_time = static_cast<hrt_abstime>(
+				math::max(_param_fv_rel_hold_t.get(), 0.5f) * 1_s);
+
+		if (_relative_pose_loss_duration > maximum_hold_time) {
+			_relative_pose_hold_timed_out = true;
+		}
+	}
+
+	_relative_pose_loss_hold = offboard_mode && _relative_pose_session_active && !_relative_pose_active
+				   && !_relative_pose_hold_timed_out;
+
+	if (offboard_mode && _relative_pose_hold_timed_out) {
+		requestPositionControlFallback(now);
+	}
 	const bool stabilized_mode = (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_STAB);
 	const bool termination_mode = _control_mode.flag_control_termination_enabled
 				      || (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_TERMINATION);
@@ -652,8 +820,6 @@ void FullvectorControl::Run()
 
 	// 声明 fullvector 接管执行器。
 	publishFullvectorControlStatus(fullvector_active, false, rc_switch_valid, rc_switch_value);
-
-	const hrt_abstime now = hrt_absolute_time();
 
 	// 激活沿从干净状态启动。
 	if (!_controller_was_active) {
@@ -758,7 +924,7 @@ void FullvectorControl::Run()
 	}
 
 	// 相对目标丢失时锁定当前位置和航向。
-	if (_relative_pose_loss_hold && !_relative_pose_hold_initialized) {
+	if ((_relative_pose_loss_hold || _relative_pose_hold_timed_out) && !_relative_pose_hold_initialized) {
 		_relative_pose_hold_position = state_for_control.position;
 		_relative_pose_hold_yaw = state_for_control.Euler_angles(2);
 		// 保留速度环和角速度环积分，由后续误差源切换只清理发生变化的外环状态。
@@ -766,7 +932,7 @@ void FullvectorControl::Run()
 	}
 
 	// 持续输出相对目标丢失时的锁定目标。
-	if (_relative_pose_loss_hold) {
+	if (_relative_pose_loss_hold || _relative_pose_hold_timed_out) {
 		_current_command.position = _relative_pose_hold_position;
 		_current_command.velocity.zero();
 		_current_command.acceleration.zero();
@@ -775,7 +941,7 @@ void FullvectorControl::Run()
 	}
 
 	// STAB、失联保持或超过 500 ms 的轨迹目标不参与控制。
-	const bool trajectory_valid = !stabilized_mode && !_relative_pose_loss_hold
+	const bool trajectory_valid = !stabilized_mode && !_relative_pose_loss_hold && !_relative_pose_hold_timed_out
 				      && (_trajectory_setpoint.timestamp != 0)
 				      && (hrt_elapsed_time(&_trajectory_setpoint.timestamp) < 500_ms);
 
@@ -978,8 +1144,10 @@ void FullvectorControl::PositionControl(const UAVStates &state, const UAVCommand
 
 	//确定当前位置控制模式
 	const bool use_relative_pose = _relative_pose_active;
-	const bool docking_position_guard = use_relative_pose || _relative_pose_loss_hold;
+	const bool docking_position_guard = use_relative_pose || _relative_pose_loss_hold || _relative_pose_hold_timed_out;
 	const bool posctl_mode = _vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_POSCTL;
+	// 每周期重新统计位置通道是否触发积分反算。
+	_position_anti_windup_active = false;
 
 	//初始化局部变量
 	Vector3f ep{};
@@ -1076,6 +1244,8 @@ void FullvectorControl::PositionControl(const UAVStates &state, const UAVCommand
 	// 生成期望速度，相对控制禁用轨迹速度前馈。
 	const Vector3f velocity_ff = use_relative_pose ? Vector3f{} : command.velocity;
 	Vector3f v_sp = velocity_ff + pos_kp.emult(ep) + pos_ki.emult(_pos_error_int) + pos_kd.emult(dep);
+	// 保留限幅前目标，用于计算位置外环反算残差。
+	const Vector3f v_sp_unconstrained = v_sp;
 
 	// 常规模式逐轴限制期望速度。
 	for (int i = 0; i < 3; i++) {
@@ -1092,6 +1262,21 @@ void FullvectorControl::PositionControl(const UAVStates &state, const UAVCommand
 			v_sp(0) *= scale;
 			v_sp(1) *= scale;
 		}
+	}
+
+	// 根据速度限幅残差修正位置外环积分。
+	bool velocity_setpoint_saturated[3] {};
+	const Vector3f velocity_setpoint_residual = v_sp - v_sp_unconstrained;
+
+	for (int i = 0; i < 3; i++) {
+		velocity_setpoint_saturated[i] = fabsf(velocity_setpoint_residual(i)) > FLT_EPSILON;
+	}
+
+	_position_anti_windup_active |= applyAntiWindup(_pos_error_int, velocity_setpoint_residual,
+					       pos_ki, velocity_setpoint_saturated, dt);
+
+	for (int i = 0; i < 3; i++) {
+		_pos_error_int(i) = math::constrain(_pos_error_int(i), -5.0f, 5.0f);
 	}
 
 	// 速度 PID 与加速度前馈共同生成期望加速度。
@@ -1132,13 +1317,13 @@ void FullvectorControl::PositionControl(const UAVStates &state, const UAVCommand
 	const Vector3f vel_kp{gain_vel_pid(0, 0), gain_vel_pid(1, 0), gain_vel_pid(2, 0)};
 	Vector3f vel_ki{gain_vel_pid(0, 1), gain_vel_pid(1, 1), gain_vel_pid(2, 1)};
 	const Vector3f vel_kd{gain_vel_pid(0, 2), gain_vel_pid(1, 2), gain_vel_pid(2, 2)};
+	// 保存 POSCTL 垂向积分状态上限，反算后继续执行同一限制。
+	float posctl_vertical_integral_state_limit = 3.0f;
 
 	// POSCTL模式单独限制 Z 轴积分带宽和贡献。
 	if (posctl_mode) {
-		// 限制参数到 0.5，避免锁高积分带宽恢复为全局值。
-		constexpr float posctl_vertical_integral_scale_max = 0.5f;
-		vel_ki(2) *= math::constrain(_param_fv_pc_z_i_scale.get(), 0.0f,
-					   posctl_vertical_integral_scale_max);
+		// 地面站可在 0～1 之间完整调整定点垂向积分带宽。
+		vel_ki(2) *= math::constrain(_param_fv_pc_z_i_scale.get(), 0.0f, 1.0f);
 
 		// 垂向积分只用于补偿慢变悬停偏差，限制其最大加速度贡献，快速高度误差由 P 环处理。
 		constexpr float posctl_vertical_integral_acceleration_max = 0.6f;
@@ -1146,29 +1331,45 @@ void FullvectorControl::PositionControl(const UAVStates &state, const UAVCommand
 							      posctl_vertical_integral_acceleration_max);
 
 		if (fabsf(vel_ki(2)) > FLT_EPSILON) {
-			const float z_integral_state_limit = z_integral_acceleration_limit / fabsf(vel_ki(2));
+			posctl_vertical_integral_state_limit = z_integral_acceleration_limit / fabsf(vel_ki(2));
 
 			if (posctl_z_just_locked) {
 				// 松杆重新锁高时只保留有限悬停补偿，避免把手动升降阶段的积分饱和带入制动。
 				constexpr float lock_capture_integral_ratio = 0.5f;
-				const float lock_capture_state_limit = lock_capture_integral_ratio * z_integral_state_limit;
+				const float lock_capture_state_limit = lock_capture_integral_ratio
+								 * posctl_vertical_integral_state_limit;
 				_vel_error_int(2) = math::constrain(_vel_error_int(2),
 							    -lock_capture_state_limit, lock_capture_state_limit);
 			}
 
 			_vel_error_int(2) = math::constrain(_vel_error_int(2),
-							    -z_integral_state_limit, z_integral_state_limit);
+							    -posctl_vertical_integral_state_limit,
+							    posctl_vertical_integral_state_limit);
 
 		} else {
 			_vel_error_int(2) = 0.0f;
 		}
 	}
 
-	_vertical_velocity_integral_acceleration = vel_ki(2) * _vel_error_int(2);
+	// 使用上一周期的分配残差修正速度环积分。
+	_position_anti_windup_active |= applyAntiWindup(_vel_error_int, _allocation_accel_residual,
+					       vel_ki, _position_allocation_saturated, dt);
+
+	for (int i = 0; i < 3; i++) {
+		_vel_error_int(i) = math::constrain(_vel_error_int(i), -3.0f, 3.0f);
+	}
+
+	if (posctl_mode) {
+		_vel_error_int(2) = math::constrain(_vel_error_int(2),
+						-posctl_vertical_integral_state_limit,
+						posctl_vertical_integral_state_limit);
+	}
 
 	// 选择加速度前馈，相对位姿控制禁用轨迹加速度前馈。
 	const Vector3f acceleration_ff = use_relative_pose ? Vector3f{} : command.acceleration;
 	Vector3f acc_cmd = acceleration_ff + vel_kp.emult(ev) + vel_ki.emult(_vel_error_int) + vel_kd.emult(dev);
+	// 保留限幅前目标，用于计算速度内环反算残差。
+	const Vector3f acc_cmd_unconstrained = acc_cmd;
 
 	// 对接阶段限制水平加速度模长。
 	if (docking_position_guard) {
@@ -1181,6 +1382,29 @@ void FullvectorControl::PositionControl(const UAVStates &state, const UAVCommand
 			acc_cmd(1) *= scale;
 		}
 	}
+
+	// 根据加速度限幅残差修正速度内环积分。
+	bool acceleration_setpoint_saturated[3] {};
+	const Vector3f acceleration_setpoint_residual = acc_cmd - acc_cmd_unconstrained;
+
+	for (int i = 0; i < 3; i++) {
+		acceleration_setpoint_saturated[i] = fabsf(acceleration_setpoint_residual(i)) > FLT_EPSILON;
+	}
+
+	_position_anti_windup_active |= applyAntiWindup(_vel_error_int, acceleration_setpoint_residual,
+					       vel_ki, acceleration_setpoint_saturated, dt);
+
+	for (int i = 0; i < 3; i++) {
+		_vel_error_int(i) = math::constrain(_vel_error_int(i), -3.0f, 3.0f);
+	}
+
+	if (posctl_mode) {
+		_vel_error_int(2) = math::constrain(_vel_error_int(2),
+						-posctl_vertical_integral_state_limit,
+						posctl_vertical_integral_state_limit);
+	}
+
+	_vertical_velocity_integral_acceleration = vel_ki(2) * _vel_error_int(2);
 
 	// 保存位置环输出和 PID 历史。
 	_pos_acc_cmd = acc_cmd;
@@ -1223,8 +1447,10 @@ void FullvectorControl::AttitudeControl(const UAVStates &state, UAVCommand &comm
 
 	// 确定当前姿态控制模式。
 	const bool use_relative_pose = _relative_pose_active;
-	const bool docking_attitude_guard = use_relative_pose || _relative_pose_loss_hold;
+	const bool docking_attitude_guard = use_relative_pose || _relative_pose_loss_hold || _relative_pose_hold_timed_out;
 	const bool full_relative_attitude = _param_fv_rel_att_mode.get() == 1;
+	// 每周期重新统计姿态通道是否触发积分反算。
+	_attitude_anti_windup_active = false;
 	// 初始化局部变量。
 	Vector3f euler_cur;
 	Vector3f euler_sp;
@@ -1334,6 +1560,14 @@ void FullvectorControl::AttitudeControl(const UAVStates &state, UAVCommand &comm
 		}
 	}
 
+	// 叠加手动 yaw 角速度前馈。
+	if (manual_yaw_control) {
+		omega_sp(2) += angular_velocity_ff(2);
+	}
+
+	// 保留限幅前目标，用于计算姿态外环反算残差。
+	const Vector3f omega_sp_unconstrained = omega_sp;
+
 	// 对接阶段限制期望角速度。
 	if (docking_attitude_guard) {
 		const float rate_limit = math::max(_param_fv_rel_rate_max.get(), 0.1f);
@@ -1343,11 +1577,32 @@ void FullvectorControl::AttitudeControl(const UAVStates &state, UAVCommand &comm
 		}
 	}
 
-	// 叠加手动 yaw 角速度前馈。
 	if (manual_yaw_control) {
 		constexpr float max_manual_yaw_rate = 2.0f; // rad/s
-		omega_sp(2) += angular_velocity_ff(2);
 		omega_sp(2) = math::constrain(omega_sp(2), -max_manual_yaw_rate, max_manual_yaw_rate);
+	}
+
+	// 根据角速度限幅残差修正姿态外环积分。
+	bool angular_velocity_setpoint_saturated[3] {};
+	const Vector3f angular_velocity_setpoint_residual = omega_sp - omega_sp_unconstrained;
+
+	for (int i = 0; i < 3; i++) {
+		angular_velocity_setpoint_saturated[i] = fabsf(angular_velocity_setpoint_residual(i)) > FLT_EPSILON;
+	}
+
+	if (yaw_rate_control_active) {
+		angular_velocity_setpoint_saturated[2] = false;
+	}
+
+	_attitude_anti_windup_active |= applyAntiWindup(_att_error_int, angular_velocity_setpoint_residual,
+					       att_ki, angular_velocity_setpoint_saturated, dt);
+
+	for (int i = 0; i < 3; i++) {
+		_att_error_int(i) = math::constrain(_att_error_int(i), -1.0f, 1.0f);
+	}
+
+	if (yaw_rate_control_active) {
+		_att_error_int(2) = 0.0f;
 	}
 
 	command.angular_velocity = omega_sp;
@@ -1385,8 +1640,23 @@ void FullvectorControl::AttitudeControl(const UAVStates &state, UAVCommand &comm
 	const Vector3f w_ki{gain_ang_vel_pid(0, 1), gain_ang_vel_pid(1, 1), gain_ang_vel_pid(2, 1)};
 	const Vector3f w_kd{gain_ang_vel_pid(0, 2), gain_ang_vel_pid(1, 2), gain_ang_vel_pid(2, 2)};
 
+	// 使用上一周期的分配残差修正角速度环积分。
+	_attitude_anti_windup_active |= applyAntiWindup(_ang_vel_error_int, _allocation_ang_acc_residual,
+					       w_ki, _attitude_allocation_saturated, dt);
+
+	for (int i = 0; i < 3; i++) {
+		_ang_vel_error_int(i) = math::constrain(_ang_vel_error_int(i), -3.0f, 3.0f);
+	}
+
+	if (manual_yaw_control) {
+		_ang_vel_error_int(2) = math::constrain(_ang_vel_error_int(2),
+						-yaw_rate_integral_limit, yaw_rate_integral_limit);
+	}
+
 	// 角速度 PID 生成期望角加速度。
 	Vector3f ang_acc_cmd = w_kp.emult(e_w) + w_ki.emult(_ang_vel_error_int) + w_kd.emult(de_w);
+	// 保留限幅前目标，用于计算角速度内环反算残差。
+	const Vector3f ang_acc_cmd_unconstrained = ang_acc_cmd;
 
 	// 手动 yaw 仅限制积分和瞬时角加速度，不在小误差下周期性清积分。
 	if (manual_yaw_control) {
@@ -1401,6 +1671,26 @@ void FullvectorControl::AttitudeControl(const UAVStates &state, UAVCommand &comm
 		for (int i = 0; i < 3; i++) {
 			ang_acc_cmd(i) = math::constrain(ang_acc_cmd(i), -acceleration_limit, acceleration_limit);
 		}
+	}
+
+	// 根据角加速度限幅残差修正角速度环积分。
+	bool angular_acceleration_setpoint_saturated[3] {};
+	const Vector3f angular_acceleration_setpoint_residual = ang_acc_cmd - ang_acc_cmd_unconstrained;
+
+	for (int i = 0; i < 3; i++) {
+		angular_acceleration_setpoint_saturated[i] = fabsf(angular_acceleration_setpoint_residual(i)) > FLT_EPSILON;
+	}
+
+	_attitude_anti_windup_active |= applyAntiWindup(_ang_vel_error_int, angular_acceleration_setpoint_residual,
+					       w_ki, angular_acceleration_setpoint_saturated, dt);
+
+	for (int i = 0; i < 3; i++) {
+		_ang_vel_error_int(i) = math::constrain(_ang_vel_error_int(i), -3.0f, 3.0f);
+	}
+
+	if (manual_yaw_control) {
+		_ang_vel_error_int(2) = math::constrain(_ang_vel_error_int(2),
+						-yaw_rate_integral_limit, yaw_rate_integral_limit);
 	}
 
 	// 保存姿态环输出和 PID 历史。
@@ -1420,6 +1710,10 @@ void FullvectorControl::AttitudeControl(const UAVStates &state, UAVCommand &comm
 
 void FullvectorControl::calculateMotorCommand(const UAVStates &state, const UAVCommand &command)
 {
+	// 每周期重新统计分配饱和位和差动缩放比例。
+	_allocation_saturation_flags = fullvector_control_status_s::ALLOC_SAT_NONE;
+	_allocation_differential_scale = 1.0f;
+
 	// 读取期望 Roll/Pitch
 	const float phi_sp = command.Euler_angles(0);
 	const float theta_sp = command.Euler_angles(1);
@@ -1474,12 +1768,21 @@ void FullvectorControl::calculateMotorCommand(const UAVStates &state, const UAVC
 	const float yaw_motor_torque_weight = motor_yaw_available ? yaw_motor_mix_weight : 0.0f;
 	const float km_safe = motor_yaw_available ? K_M : 1.0f;
 	float omega_sq_yaw = yaw_motor_torque_weight * tau_z_sp / (4.0f * km_safe);
-	const float collective_omega_sq = math::constrain(
-					  mass_safe * (gravity_safe - acc_sp_ned(2)) / (4.0f * kf_safe),
-					  0.0f, motor_omega_sq_max);
+	const float collective_omega_sq_unconstrained =
+		mass_safe * (gravity_safe - acc_sp_ned(2)) / (4.0f * kf_safe);
+	const float collective_omega_sq = math::constrain(collective_omega_sq_unconstrained, 0.0f,
+					  motor_omega_sq_max);
+
+	// 记录集体推力触及下限或上限。
+	if (collective_omega_sq_unconstrained < 0.0f) {
+		_allocation_saturation_flags |= fullvector_control_status_s::ALLOC_SAT_COLLECTIVE_LOW;
+
+	} else if (collective_omega_sq_unconstrained > motor_omega_sq_max) {
+		_allocation_saturation_flags |= fullvector_control_status_s::ALLOC_SAT_COLLECTIVE_HIGH;
+	}
 
 	// 对接阶段在角速度平方域限制三轴差动，保留力矩方向并避免总推力被过度侵占。
-	if (_relative_pose_active || _relative_pose_loss_hold) {
+	if (_relative_pose_active || _relative_pose_loss_hold || _relative_pose_hold_timed_out) {
 		const float differential_ratio = math::constrain(_param_fv_rel_motor_diff.get(), 0.05f, 1.0f);
 		const float differential_limit = differential_ratio * math::max(collective_omega_sq, 1.0f);
 		const float differential_sum = fabsf(omega_sq_roll) + fabsf(omega_sq_pitch) + fabsf(omega_sq_yaw);
@@ -1489,6 +1792,8 @@ void FullvectorControl::calculateMotorCommand(const UAVStates &state, const UAVC
 			omega_sq_roll *= differential_scale;
 			omega_sq_pitch *= differential_scale;
 			omega_sq_yaw *= differential_scale;
+			_allocation_differential_scale *= differential_scale;
+			_allocation_saturation_flags |= fullvector_control_status_s::ALLOC_SAT_DIFFERENTIAL;
 		}
 	}
 
@@ -1515,6 +1820,13 @@ void FullvectorControl::calculateMotorCommand(const UAVStates &state, const UAVC
 	}
 
 	differential_scale = math::constrain(differential_scale, 0.0f, 1.0f);
+
+	// 记录电机范围导致的二次差动缩放。
+	if (differential_scale < 1.0f - FLT_EPSILON) {
+		_allocation_differential_scale *= differential_scale;
+		_allocation_saturation_flags |= fullvector_control_status_s::ALLOC_SAT_DIFFERENTIAL;
+	}
+
 	differential_1 *= differential_scale;
 	differential_2 *= differential_scale;
 	differential_3 *= differential_scale;
@@ -1536,14 +1848,31 @@ void FullvectorControl::calculateMotorCommand(const UAVStates &state, const UAVC
 	const float tau_z_motor_actual = motor_yaw_available ? 4.0f * K_M * omega_sq_yaw * differential_scale : 0.0f;
 	const float tau_z_tilt_sp = tau_z_sp - tau_z_motor_actual;
 	// 正公共倾角在当前几何模型中产生负 yaw 力矩，因此公共倾角使用反号。
-	const float alpha_yaw = math::constrain(-tau_z_tilt_sp / (kf_safe * distance_safe * motor_sq_sum),
-						-yaw_tilt_max_rad, yaw_tilt_max_rad);
+	const float alpha_yaw_unconstrained = -tau_z_tilt_sp / (kf_safe * distance_safe * motor_sq_sum);
+	const float alpha_yaw = math::constrain(alpha_yaw_unconstrained, -yaw_tilt_max_rad, yaw_tilt_max_rad);
+
+	// 记录 yaw 公共倾转触及独立上限。
+	if (fabsf(alpha_yaw - alpha_yaw_unconstrained) > FLT_EPSILON) {
+		_allocation_saturation_flags |= fullvector_control_status_s::ALLOC_SAT_YAW_TILT;
+	}
 
 	// 叠加公共倾转角并统一限幅。
-	alpha_offset1 = math::constrain(alpha_base1 + alpha_yaw, -tilt_angle_max_rad, tilt_angle_max_rad);
-	alpha_offset2 = math::constrain(alpha_base2 + alpha_yaw, -tilt_angle_max_rad, tilt_angle_max_rad);
-	alpha_offset3 = math::constrain(alpha_base3 + alpha_yaw, -tilt_angle_max_rad, tilt_angle_max_rad);
-	alpha_offset4 = math::constrain(alpha_base4 + alpha_yaw, -tilt_angle_max_rad, tilt_angle_max_rad);
+	const float alpha_unconstrained1 = alpha_base1 + alpha_yaw;
+	const float alpha_unconstrained2 = alpha_base2 + alpha_yaw;
+	const float alpha_unconstrained3 = alpha_base3 + alpha_yaw;
+	const float alpha_unconstrained4 = alpha_base4 + alpha_yaw;
+	alpha_offset1 = math::constrain(alpha_unconstrained1, -tilt_angle_max_rad, tilt_angle_max_rad);
+	alpha_offset2 = math::constrain(alpha_unconstrained2, -tilt_angle_max_rad, tilt_angle_max_rad);
+	alpha_offset3 = math::constrain(alpha_unconstrained3, -tilt_angle_max_rad, tilt_angle_max_rad);
+	alpha_offset4 = math::constrain(alpha_unconstrained4, -tilt_angle_max_rad, tilt_angle_max_rad);
+
+	// 任一舵机触及机械角度上限时记录倾转饱和。
+	if ((fabsf(alpha_offset1 - alpha_unconstrained1) > FLT_EPSILON)
+	    || (fabsf(alpha_offset2 - alpha_unconstrained2) > FLT_EPSILON)
+	    || (fabsf(alpha_offset3 - alpha_unconstrained3) > FLT_EPSILON)
+	    || (fabsf(alpha_offset4 - alpha_unconstrained4) > FLT_EPSILON)) {
+		_allocation_saturation_flags |= fullvector_control_status_s::ALLOC_SAT_TILT;
+	}
 
 	// 创建电机输出消息，设置电机消息采样和发布时间并初始化为 NaN。
 	actuator_motors_s motor_speed{};
@@ -1682,6 +2011,39 @@ void FullvectorControl::controlAllocation(const UAVStates &state, const UAVComma
 
 	// 一步预测机体系角速度。
 	const Vector3f ang_acc_body(dp, dq, dr);
+	// 保存实际可实现控制量及其相对请求值的残差。
+	_allocation_accel_achieved = acc_world;
+	_allocation_ang_acc_achieved = ang_acc_body;
+	_allocation_accel_residual = _allocation_accel_achieved - _pos_acc_cmd;
+	_allocation_ang_acc_residual = _allocation_ang_acc_achieved - _att_ang_acc_cmd;
+
+	const bool collective_saturated = (_allocation_saturation_flags
+					   & (fullvector_control_status_s::ALLOC_SAT_COLLECTIVE_LOW
+					      | fullvector_control_status_s::ALLOC_SAT_COLLECTIVE_HIGH)) != 0;
+	const bool differential_saturated = (_allocation_saturation_flags
+					     & fullvector_control_status_s::ALLOC_SAT_DIFFERENTIAL) != 0;
+	const bool tilt_saturated = (_allocation_saturation_flags & fullvector_control_status_s::ALLOC_SAT_TILT) != 0;
+	const bool yaw_tilt_saturated = (_allocation_saturation_flags
+					 & fullvector_control_status_s::ALLOC_SAT_YAW_TILT) != 0;
+
+	// 只在饱和确实阻碍当前请求方向时启用对应轴反算。
+	const auto saturation_opposes_request = [](float request, float residual) {
+		return (fabsf(request) > FLT_EPSILON) && (request * residual < 0.0f);
+	};
+
+	_position_allocation_saturated[0] = tilt_saturated
+					    && saturation_opposes_request(_pos_acc_cmd(0), _allocation_accel_residual(0));
+	_position_allocation_saturated[1] = tilt_saturated
+					    && saturation_opposes_request(_pos_acc_cmd(1), _allocation_accel_residual(1));
+	_position_allocation_saturated[2] = (collective_saturated || tilt_saturated)
+					    && saturation_opposes_request(_pos_acc_cmd(2), _allocation_accel_residual(2));
+	_attitude_allocation_saturated[0] = (differential_saturated || tilt_saturated)
+					    && saturation_opposes_request(_att_ang_acc_cmd(0), _allocation_ang_acc_residual(0));
+	_attitude_allocation_saturated[1] = (differential_saturated || tilt_saturated)
+					    && saturation_opposes_request(_att_ang_acc_cmd(1), _allocation_ang_acc_residual(1));
+	_attitude_allocation_saturated[2] = (differential_saturated || yaw_tilt_saturated)
+					    && saturation_opposes_request(_att_ang_acc_cmd(2), _allocation_ang_acc_residual(2));
+
 	const Vector3f omega_integrated = state.angular_velocity + ang_acc_body * dt;
 	const float p_new = omega_integrated(0);
 	const float q_new = omega_integrated(1);
@@ -1701,7 +2063,6 @@ void FullvectorControl::controlAllocation(const UAVStates &state, const UAVComma
 	(void)vel_integrated;
 	(void)q_integrated;
 	(void)omega_integrated;
-	(void)ang_acc_body;
 }
 
 int FullvectorControl::task_spawn(int argc, char *argv[])

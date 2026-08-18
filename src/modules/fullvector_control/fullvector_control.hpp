@@ -66,6 +66,7 @@
 #include <uORB/topics/manual_control_setpoint.h>
 #include <uORB/topics/trajectory_setpoint.h>
 #include <uORB/topics/target_relative_pose.h>
+#include <uORB/topics/vehicle_command.h>
 #include <uORB/topics/vehicle_status.h>
 
 #include <uORB/topics/actuator_motors.h>
@@ -146,7 +147,12 @@ private:
 	void publishNeutralTiltServos();
 	void publishFullvectorControlStatus(bool fullvector_active, bool native_requested, bool rc_switch_valid,
 					    float rc_switch_value);
+	// 对接失联回退、输入门控和反算 anti-windup。
+	void requestPositionControlFallback(hrt_abstime now);
 	bool evaluateNativeControllerRequest(float &rc_switch_value, bool &rc_switch_valid);
+	bool validateRelativePoseSample(const target_relative_pose_s &candidate, hrt_abstime now);
+	bool applyAntiWindup(Vector3f &integral_state, const Vector3f &output_residual,
+			     const Vector3f &integral_gain, const bool saturated[3], float dt);
 
 	bool updateUAVState();
 	bool updateAttitudeStateOnly();
@@ -170,6 +176,12 @@ private:
 		(ParamFloat<px4::params::FV_REL_VXY_MAX>) _param_fv_rel_vxy_max,
 		(ParamFloat<px4::params::FV_REL_AXY_MAX>) _param_fv_rel_axy_max,
 		(ParamFloat<px4::params::FV_REL_LOSS_T>) _param_fv_rel_loss_t,
+		// 相对位姿最长保持和异常值门控。
+		(ParamFloat<px4::params::FV_REL_HOLD_T>) _param_fv_rel_hold_t,
+		(ParamFloat<px4::params::FV_REL_POS_JMP>) _param_fv_rel_pos_jump,
+		(ParamFloat<px4::params::FV_REL_VEL_G>) _param_fv_rel_velocity_gate,
+		(ParamFloat<px4::params::FV_REL_ANG_JMP>) _param_fv_rel_angle_jump,
+		(ParamFloat<px4::params::FV_REL_RATE_G>) _param_fv_rel_rate_gate,
 		(ParamInt<px4::params::FV_REL_ATT_MODE>) _param_fv_rel_att_mode,
 		(ParamFloat<px4::params::FV_REL_ATT_GAIN>) _param_fv_rel_att_gain,
 		(ParamFloat<px4::params::FV_REL_RATE_MAX>) _param_fv_rel_rate_max,
@@ -226,6 +238,8 @@ private:
 		(ParamFloat<px4::params::FV_TILT_MAX>)		  _param_fv_tilt_max,
 		(ParamFloat<px4::params::FV_YAW_TILT_MAX>)	  _param_fv_yaw_tilt_max,
 		(ParamFloat<px4::params::FV_YAW_MIX_WT>)	  _param_fv_yaw_mix_wt,
+		// 分配饱和反算增益。
+		(ParamFloat<px4::params::FV_AW_GAIN>)		  _param_fv_aw_gain,
 		(ParamFloat<px4::params::FV_INERTIA_XX>)          _param_fv_inertia_xx,
 		(ParamFloat<px4::params::FV_INERTIA_YY>)          _param_fv_inertia_yy,
 		(ParamFloat<px4::params::FV_INERTIA_ZZ>)	  _param_fv_inertia_zz,
@@ -240,6 +254,8 @@ private:
 	uORB::Publication<actuator_motors_s> _motor_speed_pub_raw{ORB_ID(actuator_motors)};
 	// control_allocator 根据该状态决定是否让出原生输出。
 	uORB::Publication<fullvector_control_status_s> _fullvector_control_status_pub{ORB_ID(fullvector_control_status)};
+	// 对接失联超时后请求 Commander 切回 POSCTL。
+	uORB::Publication<vehicle_command_s> _vehicle_command_pub{ORB_ID(vehicle_command)};
 
 	// 控制器输入。
 	uORB::Subscription _vehicle_local_position_sub{ORB_ID(vehicle_local_position)};
@@ -267,6 +283,7 @@ private:
 	bool _relative_pose_active{false};
 	bool _relative_pose_session_active{false};
 	bool _relative_pose_loss_hold{false};
+	bool _relative_pose_hold_timed_out{false};
 	bool _relative_pose_just_lost{false};
 	bool _relative_pose_hold_initialized{false};
 	Quatf _relative_attitude{};
@@ -275,6 +292,17 @@ private:
 	Vector3f _relative_pose_hold_position{};
 	float _relative_pose_hold_yaw{0.0f};
 	hrt_abstime _last_target_relative_pose_update{0};
+	// 相对位姿接收、失联和异常拒绝诊断。
+	hrt_abstime _last_accepted_target_pose_update{0};
+	hrt_abstime _relative_pose_loss_started{0};
+	hrt_abstime _last_fallback_request{0};
+	uint64_t _target_pose_timestamp_sample{0};
+	uint8_t _target_pose_target_id{0};
+	int64_t _target_pose_time_offset{0};
+	uint64_t _target_pose_receive_age{0};
+	uint64_t _relative_pose_loss_duration{0};
+	uint32_t _relative_pose_reject_count{0};
+	uint8_t _relative_pose_reject_reason{0};
 
 	// PID 增益：行表示轴，列表示 P/I/D。
 	Matrix3f gain_pos_pid{};
@@ -322,6 +350,17 @@ private:
 
 	Vector3f _pos_acc_cmd{};       // NED 期望加速度。
 	Vector3f _att_ang_acc_cmd{};   // 机体系期望角加速度。
+	// 分配器实际能力、请求残差和 anti-windup 状态。
+	Vector3f _allocation_accel_achieved{};
+	Vector3f _allocation_ang_acc_achieved{};
+	Vector3f _allocation_accel_residual{};
+	Vector3f _allocation_ang_acc_residual{};
+	float _allocation_differential_scale{1.0f};
+	uint16_t _allocation_saturation_flags{0};
+	bool _position_anti_windup_active{false};
+	bool _attitude_anti_windup_active{false};
+	bool _position_allocation_saturated[3] {};
+	bool _attitude_allocation_saturated[3] {};
 
 	// 执行器分配结果，编号顺序为右前、左后、左前、右后。
 	float alpha_offset1{0.0f};

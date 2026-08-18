@@ -32,6 +32,12 @@ class TargetRelativePoseBridge(Node):
         self.declare_parameter('max_pose_age_s', 0.2)
         # Do not republish stale orientation into the fast attitude loop by default.
         self.declare_parameter('dropout_grace_s', 0.0)
+        # 对接失联和位姿异常值门控参数。
+        self.declare_parameter('offboard_ready_timeout_s', 1.5)
+        self.declare_parameter('position_jump_m', 0.2)
+        self.declare_parameter('position_rate_limit_m_s', 3.0)
+        self.declare_parameter('orientation_jump_rad', 0.2)
+        self.declare_parameter('orientation_rate_limit_rad_s', 2.0)
 
         self._parent_frame = str(self.get_parameter('parent_frame').value)
         target_frame = str(self.get_parameter('target_frame').value)
@@ -68,14 +74,45 @@ class TargetRelativePoseBridge(Node):
         self._dropout_grace_ns = int(
             float(self.get_parameter('dropout_grace_s').value) * 1e9
         )
+        # 将时限转换为纳秒，并缓存运动学门控阈值。
+        self._offboard_ready_timeout_ns = int(
+            float(self.get_parameter('offboard_ready_timeout_s').value) * 1e9
+        )
+        self._position_jump_m = float(self.get_parameter('position_jump_m').value)
+        self._position_rate_limit_m_s = float(
+            self.get_parameter('position_rate_limit_m_s').value
+        )
+        self._orientation_jump_rad = float(
+            self.get_parameter('orientation_jump_rad').value
+        )
+        self._orientation_rate_limit_rad_s = float(
+            self.get_parameter('orientation_rate_limit_rad_s').value
+        )
 
         if publish_rate_hz <= 0.0 or offboard_heartbeat_rate_hz <= 0.0:
             raise ValueError(
                 'publish_rate_hz and offboard_heartbeat_rate_hz must be positive'
             )
 
-        if self._max_pose_age_ns < 0 or self._dropout_grace_ns < 0:
-            raise ValueError('max_pose_age_s and dropout_grace_s must be non-negative')
+        # 检查各时间参数范围。
+        if (
+            self._max_pose_age_ns < 0
+            or self._dropout_grace_ns < 0
+            or self._offboard_ready_timeout_ns <= 0
+        ):
+            raise ValueError(
+                'max_pose_age_s and dropout_grace_s must be non-negative; '
+                'offboard_ready_timeout_s must be positive'
+            )
+
+        # 异常值门限必须为非负数。
+        if (
+            self._position_jump_m < 0.0
+            or self._position_rate_limit_m_s < 0.0
+            or self._orientation_jump_rad < 0.0
+            or self._orientation_rate_limit_rad_s < 0.0
+        ):
+            raise ValueError('pose anomaly gate thresholds must be non-negative')
 
         if target_frames or target_ids:
             if not target_frames or len(target_frames) != len(target_ids):
@@ -113,6 +150,8 @@ class TargetRelativePoseBridge(Node):
         self._last_pose = None
         self._holding_last_pose = False
         self._offboard_ready = False
+        # 记录最近一次通过门控的本地接收时刻。
+        self._last_valid_receive_ns: Optional[int] = None
         self._pose_timer = self.create_timer(1.0 / publish_rate_hz, self._publish_pose)
         self._heartbeat_timer = self.create_timer(
             1.0 / offboard_heartbeat_rate_hz,
@@ -126,6 +165,7 @@ class TargetRelativePoseBridge(Node):
             f'Publishing pose of {self._parent_frame} expressed in '
             f'the freshest target frame on {output_topic}; targets=[{target_description}], '
             f'dropout_grace={self._dropout_grace_ns / 1e9:.3f} s; '
+            f'offboard_ready_timeout={self._offboard_ready_timeout_ns / 1e9:.3f} s; '
             f'Offboard heartbeat={offboard_heartbeat_rate_hz:.1f} Hz '
             f'on {offboard_control_mode_topic}'
         )
@@ -147,9 +187,25 @@ class TargetRelativePoseBridge(Node):
     def _publish_offboard_heartbeat(self) -> None:
         # Commander only accepts Offboard when it receives a recent
         # OffboardControlMode with at least one control level enabled.
-        # 首次获得有效目标后持续声明位置控制级别，短时视觉失效交给飞控的丢失保持处理。
+        # 短时视觉失效交给飞控保持；超过上限后撤销位置控制声明，避免就绪状态永久锁存。
+        now_ns = self.get_clock().now().nanoseconds
+
+        if (
+            self._offboard_ready
+            and self._last_valid_receive_ns is not None
+            and now_ns - self._last_valid_receive_ns
+            > self._offboard_ready_timeout_ns
+        ):
+            self._offboard_ready = False
+            self._last_pose = None
+            self._active_target_id = None
+            self._set_valid_state(
+                False,
+                'no accepted pose before offboard readiness timeout',
+            )
+
         offboard_mode = OffboardControlMode()
-        offboard_mode.timestamp = self.get_clock().now().nanoseconds // 1000
+        offboard_mode.timestamp = now_ns // 1000
         offboard_mode.position = self._offboard_ready
         offboard_mode.velocity = False
         offboard_mode.acceleration = False
@@ -185,6 +241,17 @@ class TargetRelativePoseBridge(Node):
         invalid_reasons = []
 
         for target_id, target_frame in self._targets:
+            # 活动会话只跟踪已选目标，避免多目标之间跳变。
+            if (
+                self._offboard_ready
+                and self._active_target_id is not None
+                and target_id != self._active_target_id
+            ):
+                invalid_reasons.append(
+                    f'ID {target_id}: target switching locked during active session'
+                )
+                continue
+
             try:
                 transform = self._tf_buffer.lookup_transform(
                     target_frame,
@@ -231,6 +298,60 @@ class TargetRelativePoseBridge(Node):
                 ],
             )
 
+            # 与上一份有效位姿比较，执行位置和姿态运动学门控。
+            if self._last_pose is not None and target_id == self._last_pose[1]:
+                (
+                    previous_sample_ns,
+                    _,
+                    previous_position,
+                    previous_quaternion_wxyz,
+                ) = self._last_pose
+                sample_dt_s = max(
+                    0.0,
+                    min(1.0, (sample_time.nanoseconds - previous_sample_ns) / 1e9),
+                )
+                # 位置门限随有效样本间隔线性放宽。
+                position_delta = math.sqrt(
+                    sum(
+                        (position[index] - previous_position[index]) ** 2
+                        for index in range(3)
+                    )
+                )
+                position_limit = (
+                    self._position_jump_m
+                    + self._position_rate_limit_m_s * sample_dt_s
+                )
+
+                if position_delta > position_limit:
+                    invalid_reasons.append(
+                        f'ID {target_id}: position jump {position_delta:.3f} m '
+                        f'exceeds {position_limit:.3f} m'
+                    )
+                    continue
+
+                # 用四元数夹角检查姿态跳变，并兼容 q 与 -q。
+                quaternion_dot = abs(
+                    sum(
+                        candidate[3][index] * previous_quaternion_wxyz[index]
+                        for index in range(4)
+                    )
+                )
+                orientation_delta = 2.0 * math.acos(
+                    max(0.0, min(1.0, quaternion_dot))
+                )
+                orientation_limit = (
+                    self._orientation_jump_rad
+                    + self._orientation_rate_limit_rad_s * sample_dt_s
+                )
+
+                if orientation_delta > orientation_limit:
+                    invalid_reasons.append(
+                        f'ID {target_id}: orientation jump '
+                        f'{orientation_delta:.3f} rad exceeds '
+                        f'{orientation_limit:.3f} rad'
+                    )
+                    continue
+
             if best_pose is None or candidate[0] > best_pose[0]:
                 best_pose = candidate
 
@@ -276,6 +397,8 @@ class TargetRelativePoseBridge(Node):
 
         self._holding_last_pose = False
         self._last_pose = best_pose
+        # 只有通过全部门控的位姿才刷新 Offboard 就绪时限。
+        self._last_valid_receive_ns = now.nanoseconds
         msg = self._new_message(now.nanoseconds // 1000, target_id)
         msg.timestamp_sample = sample_time_ns // 1000
         msg.position = [float(value) for value in position]

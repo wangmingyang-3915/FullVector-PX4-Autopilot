@@ -107,9 +107,12 @@ a_z = g - F_z / m
 
 - `fullvector_active`、`native_requested`：当前控制权归属；
 - `rc_switch_valid`、`rc_switch_value`：AUX 切换输入是否有效及其归一化值；
-- `relative_pose_valid`、`relative_pose_active`、`relative_pose_loss_hold`：相对位姿校验、接管和失联保持状态；
-- `relative_attitude_mode`、`target_id`、`target_pose_timestamp_sample`、`target_pose_age`：相对姿态模式和目标样本信息；
+- `relative_pose_valid`、`relative_pose_active`、`relative_pose_loss_hold`、`relative_pose_hold_timed_out`：相对位姿校验、接管、短时保持和最长保持超时状态；
+- `target_pose_timestamp_sample`、`target_pose_age`、`target_pose_receive_age`、`target_pose_time_offset`：区分样本年龄、本地接收年龄和跨机时钟偏差；
+- `relative_pose_loss_duration`、`relative_pose_reject_reason/count`：失联持续时间和异常输入拒绝统计；
 - `posctl_z_hold_active`、`vertical_velocity_feedback`、`vertical_velocity_integral_acceleration`：定点垂向闭环的反馈与积分诊断量。
+- `allocation_saturation_flags`、`allocation_differential_scale`、请求/实现线加速度和角加速度：执行器分配饱和及可实现性诊断；
+- `position_anti_windup_active`、`attitude_anti_windup_active`：本周期是否执行反算 anti-windup。
 
 下游 `control_allocator` 可根据该状态判断是否让出原生执行器输出，ULog 则可记录这些控制权与内部状态变化。
 
@@ -130,7 +133,7 @@ a_z = g - F_z / m
 
 1. 重新调度下一次 5 ms 周期；
 2. 更新参数、飞行模式、轨迹目标和相对位姿；
-3. 检查相对位姿的本地接收超时、有限性、有效标志和四元数归一化误差；
+3. 检查相对位姿的本地接收超时、有限性、有效标志、四元数归一化、目标 ID 和运动学跳变；
 4. 读取 RC AUX 切换请求；
 5. 判断 fullvector 是否允许接管执行器；
 6. 计算并检查控制周期 `dt`；
@@ -408,11 +411,11 @@ beta = constrain(FV_Z_VEL_BLEND, 0, 1)
 POSCTL 中有效的 Z 轴积分增益为：
 
 ```text
-Ki_z,effective = FV_VEL_I_Z · constrain(FV_PC_Z_I_SCALE, 0, 0.5)
+Ki_z,effective = FV_VEL_I_Z · constrain(FV_PC_Z_I_SCALE, 0, 1)
 ```
 
-为兼容飞控中仍保存为 `1.0` 的旧参数，代码和参数元数据都会把 `FV_PC_Z_I_SCALE` 的最高有效值限制为
-`0.5`，因此 POSCTL 的垂向积分带宽不会超过全局垂向积分的一半。
+`FV_PC_Z_I_SCALE` 可通过地面站在 `0～1` 范围内调整：`0` 关闭 POSCTL 垂向积分，`1` 使用完整的
+`FV_VEL_I_Z`。默认值仍为 `0.5`，但不在代码中写死最高有效值。
 
 积分项最终允许贡献的加速度还受到以下限制：
 
@@ -580,7 +583,14 @@ delta_u_yaw   = tau_z,motor / (4 · K_M)
 
 超过限制时对三个差动分量等比例缩放，保持混控方向和相对比例不变。
 
-### 9.5 四电机混控
+### 9.5 分配可观测性和 anti-windup
+
+分配器记录集体推力下限/上限、差动缩放、舵机倾转以及 yaw 公共倾转饱和，并用最终电机和舵机
+输出反算实际可实现的 NED 加速度与机体系角加速度。控制器使用上一周期的残差
+`u_achieved - u_requested` 修正速度环和角速度环积分；位置与姿态外环的本地目标限幅也采用同样的
+反算方式。`FV_AW_GAIN` 控制积分退出饱和的速度，设为 `0` 可关闭反算。
+
+### 9.6 四电机混控
 
 四个电机角速度平方命令为：
 
@@ -594,7 +604,7 @@ u_4 = u_collective - delta_u_roll - delta_u_pitch - delta_u_yaw
 如果任一路超出 `[0, u_max]`，控制器在保持集体量不变的前提下等比例压缩四路差动。最终使用
 `omega_i = sqrt(u_i)` 供动力学估算使用。
 
-### 9.6 yaw 公共倾转
+### 9.7 yaw 公共倾转
 
 除了电机差动，yaw 的剩余力矩还通过四个舵机同向公共倾转产生。电机差动受到对接限幅或
 输出饱和压缩时，先按实际差动缩放量计算电机已经产生的力矩，再把余量交给公共倾转：
@@ -624,7 +634,7 @@ alpha_i = constrain(alpha_base_i + alpha_yaw,
 因此 yaw 由电机反扭矩差动和公共倾转共同完成，`FV_YAW_MIX_WT` 是两条通道之间的力矩分配比例，
 默认 `0.5`，可通过地面站在 `[0, 1]` 内在线调整，不会让两条通道分别重复承担完整的 yaw 力矩。
 
-### 9.7 执行器归一化
+### 9.8 执行器归一化
 
 电机推力近似满足 `T ∝ omega^2`。以悬停点为标定基准：
 
@@ -770,6 +780,7 @@ RC 请求切回 PX4 原生控制器时，只发布四路倾转舵机中位命令
 - `FV_PC_Z_I_SCALE`：POSCTL 垂向积分增益缩放；
 - `FV_Z_VEL_BLEND`：`vz` 与 `z_deriv` 的融合权重；
 - `FV_Z_INT_MAX`：垂向积分允许贡献的最大加速度。
+- `FV_AW_GAIN`：限幅和执行器分配残差的反算 anti-windup 增益。
 
 ### 13.3 飞行器和执行器模型
 
@@ -788,6 +799,9 @@ RC 请求切回 PX4 原生控制器时，只发布四路倾转舵机中位命令
 - `FV_REL_POS_X/Y/Z`：期望相对位置；
 - `FV_REL_ROLL/PITCH/YAW`：期望相对姿态；
 - `FV_REL_LOSS_T`：相对位姿超时时间，默认 0.25 s；
+- `FV_REL_HOLD_T`：目标丢失后的最长 NED 位置/航向保持时间，超时请求 POSCTL；
+- `FV_REL_POS_JMP`、`FV_REL_VEL_G`：相对位置基础跳变和随接收间隔扩展的速度门控；
+- `FV_REL_ANG_JMP`、`FV_REL_RATE_G`：相对姿态基础跳变和角速度门控；
 - `FV_REL_ATT_MODE`、`FV_REL_ATT_GAIN`：相对姿态模式和带宽缩放；
 - `FV_REL_VXY_MAX`、`FV_REL_AXY_MAX`：对接水平速度、加速度上限；
 - `FV_REL_RATE_MAX`、`FV_REL_ACC_MAX`：对接角速度、角加速度上限，默认分别为 0.5 rad/s 和
@@ -807,10 +821,10 @@ RC 请求切回 PX4 原生控制器时，只发布四路倾转舵机中位命令
 - 姿态外环使用欧拉角 PID，不是四元数或 SO(3) 几何控制；
 - 执行器分配是基于当前构型推导的显式公式，不是带约束的矩阵优化分配器；
 - 水平加速度转换到机体系时只使用当前 yaw；
-- `controlAllocation()` 后半部分的动力学积分仅作内部预测，不会修正估计器状态或控制输出；
+- `controlAllocation()` 的一步动力学积分不会修正估计器状态；其中实际加速度和角加速度会用于分配诊断及 anti-windup；
 - STAB 的最大姿态、最大 yaw rate 和最大水平加速度目前是代码内常量，不是 PX4 参数；
 - 相对位姿分支假设目标机速度和加速度为零，没有使用目标机运动前馈；
 - PID 微分直接对误差做差分，未单独配置低通滤波器，因此状态噪声、视觉延迟和 `dt` 抖动会直接影响微分项；
 - 电机归一化建立在 `T ∝ omega^2` 和 `FV_HOVER_THR` 标定准确的前提下，实机需要确保 `K_F`、质量、PWM 推力曲线和悬停油门一致。
 
-这些边界是后续升级为几何姿态控制、带约束控制分配、目标运动前馈或抗饱和控制时需要重点考虑的部分。
+这些边界是后续升级为几何姿态控制、带约束优化分配或目标运动前馈时需要重点考虑的部分。
