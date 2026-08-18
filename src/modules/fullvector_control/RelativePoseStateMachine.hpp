@@ -58,6 +58,7 @@ public:
 
 		switch (_state) {
 		case State::Idle:
+
 			// 视觉连续有效后开始跟踪。
 			if (pose_valid) {
 				startTimer(_valid_started, now);
@@ -74,6 +75,7 @@ public:
 			break;
 
 		case State::Tracking:
+
 			// 视觉连续无效后进入保持态。
 			if (!pose_valid) {
 				startTimer(_invalid_started, now);
@@ -91,6 +93,7 @@ public:
 			break;
 
 		case State::LossHold:
+
 			// 保持超时则中止；视觉稳定恢复则继续跟踪。
 			if (lossDuration(now) > hold_timeout) {
 				_state = State::Aborted;
