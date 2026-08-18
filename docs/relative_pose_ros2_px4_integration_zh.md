@@ -244,22 +244,18 @@ ROS 2 /fmu/in/target_relative_pose
 - 三维位置均为有限数；
 - 四元数均为有限数；
 - 四元数范数平方和 1 的误差小于 0.05；
-- 本地超过 200 ms 没收到新消息时自动判无效。
+- 本地接收间隔超过 `FV_REL_LOSS_T` 时自动判无效。
 
 当飞行模式为 Offboard 且 `_target_relative_pose_valid == true` 时，相对位姿已接入控制律：
 
 - 位置外环使用 `FV_REL_POS_X/Y/Z` 作为目标机 body FRD 中的期望相对位置；
 - 相对位置误差先从目标机 body FRD 旋转到 NED，再进入现有速度环和执行器分配；
-- `FV_REL_VXY_MAX` 对 NED 水平期望速度模长限幅，默认 `0.50 m/s`；
-- `FV_REL_AXY_MAX` 对 NED 水平期望加速度模长限幅，默认 `1.00 m/s²`；
 - `FV_REL_LOSS_T` 限制飞控本地相对位姿接收间隔，默认 `0.25 s`，超时后退出相对位姿控制；
-- `FV_REL_ATT_MODE=0` 默认使用 EKF/IMU 保持 roll/pitch，仅用视觉相对姿态对齐 yaw；设置为 1 可恢复旧版完整相对姿态控制；
-- `FV_REL_ATT_GAIN`、`FV_REL_RATE_MAX` 和 `FV_REL_ACC_MAX` 分别限制视觉姿态外环增益、期望角速度和
-  角加速度；后两者默认分别为 `0.50 rad/s` 和 `2.00 rad/s²`；
-- `FV_REL_MOT_DIF` 限制对接阶段姿态控制产生的电机差动；
+- `FV_REL_DBNC_T` 要求视觉状态连续稳定后才允许切换，默认 `0.08 s`；
+- `FV_REL_POS_JMP`、`FV_REL_VEL_G`、`FV_REL_ANG_JMP`、`FV_REL_RATE_G` 拒绝位置或姿态异常跳变；
+- `FV_REL_ATT_MODE=0` 时由 IMU/EKF 保持 roll/pitch、视觉只对齐 yaw；设置为 1 时跟踪三轴视觉相对姿态；
 - 相对位姿丢失后，控制器锁定丢失瞬间的 NED 位置和航向，只清理已切换误差源的外环积分，保留
   速度和角速度内环补偿；
-- 姿态外环使用 `FV_REL_ROLL/PITCH/YAW` 与相对四元数对应的欧拉角形成误差；
 - 相对控制期间不叠加 `trajectory_setpoint` 的速度和加速度前馈。
 
 不在 Offboard 模式或相对位姿无效时，控制器不会使用相对位姿误差，继续采用原有绝对轨迹目标。误差源切换时会清理对应外环历史状态，避免积分残留和微分跳变。

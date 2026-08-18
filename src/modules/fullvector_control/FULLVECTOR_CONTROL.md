@@ -110,15 +110,12 @@ a_z = g - F_z / m
 - `relative_pose_valid`、`relative_pose_active`、`relative_pose_loss_hold`、`relative_pose_hold_timed_out`：相对位姿校验、接管、短时保持和最长保持超时状态；
 - `target_pose_timestamp_sample`、`target_pose_age`、`target_pose_receive_age`、`target_pose_time_offset`：区分样本年龄、本地接收年龄和跨机时钟偏差；
 - `relative_pose_loss_duration`、`relative_pose_reject_reason/count`：失联持续时间和异常输入拒绝统计；
-- `posctl_z_hold_active`、`vertical_velocity_feedback`、`vertical_velocity_integral_acceleration`：定点垂向闭环的反馈与积分诊断量。
-- `allocation_saturation_flags`、`allocation_differential_scale`、请求/实现线加速度和角加速度：执行器分配饱和及可实现性诊断；
-- `position_anti_windup_active`、`attitude_anti_windup_active`：本周期是否执行反算 anti-windup。
 
 下游 `control_allocator` 可根据该状态判断是否让出原生执行器输出，ULog 则可记录这些控制权与内部状态变化。
 
 ### 3.3 日志和运行诊断
 
-模块不再执行高频 `PX4_INFO` 打印，也不订阅仅用于控制台对比的数据。飞行数值由 PX4 logger 独立订阅上述 uORB 话题，因此删除控制台打印不会影响 ULog 中的位置目标、角加速度目标、电机输出、舵机输出和控制权状态。
+`FV_DBG_EN` 默认关闭。启用后，模块以 5 Hz 输出一条合并的控制摘要，其中包含对接状态、期望线加速度和期望角加速度；不再从位置环、姿态环和控制分配器分别重复打印。飞行数值同时可由 PX4 logger 记录到 ULog。
 
 模块保留以下运行诊断：
 
@@ -196,8 +193,6 @@ POSCTL 使用 `trajectory_setpoint`，该目标通常由 PX4 `FlightModeManager`
 - yaw 杆释放后，保存 `trajectory_setpoint.yaw`，继续保持释放时的航向；
 - roll、pitch 目标保持为 0，平移主要由电机倾转产生。
 
-POSCTL 锁高时还会使用专门的垂向速度融合和积分限制，见第 7.4 节。
-
 ### 5.2 OFFBOARD 普通轨迹模式
 
 相对位姿没有激活时，控制器读取有效且不超过 500 ms 的 `trajectory_setpoint`：
@@ -220,6 +215,24 @@ POSCTL 锁高时还会使用专门的垂向速度融合和积分限制，见第 
 TF 样本年龄由机载桥接端按原始采样时间检查并写入有效标志；飞控端以本地消息接收时间监控 DDS
 链路，避免伴随计算机与飞控的时间同步跳变把连续到达的数据误判为过期。控制周期开始时会固定
 本拍的相对位姿有效状态，位置环和姿态环共用这一快照，避免同一控制周期内使用不同版本的数据。
+
+对接会话由四个显式状态组成：
+
+| 状态 | 含义 |
+|---|---|
+| `Idle` | 尚未捕获有效目标，或者不再拥有 OFFBOARD 控制权 |
+| `Tracking` | 正在使用相对位姿；此时 `_relative_pose_active=true` |
+| `LossHold` | 已经跟踪过目标，但当前输入失效，保持丢失瞬间的 NED 位置和 yaw |
+| `Aborted` | 丢失保持超过 `FV_REL_HOLD_T`，锁存中止并请求 POSCTL |
+
+视觉有效性必须连续保持 `FV_REL_DBNC_T`（默认 0.08 s），状态机才会完成 `Idle → Tracking`、
+`Tracking → LossHold` 或 `LossHold → Tracking` 切换。Tracking 中短于该时间的无效输入继续使用最后一份
+已接受位姿，因此 60 Hz 视觉链路中的单帧异常不会切换控制误差源。进入 LossHold 后，丢失持续时间仍从
+首个连续无效时刻计算，不会因为迟滞而延后最长保持期限。
+
+位置环和姿态环只读取 `_relative_pose_active`，不再分别根据模式、输入有效性或超时标志重复推导。
+`Aborted` 即使重新收到有效视觉数据也不会恢复 `Tracking`；退出 OFFBOARD 或通过 RC 交还控制权后，
+`resetRelativePoseSession()` 统一回到 `Idle` 并清除运动学门控基准和计时器。
 
 相对位置目标由以下参数给出：
 
@@ -247,24 +260,21 @@ R_NED,target = R(state.attitude) · R(relative_attitude)^T
 
 相对控制不叠加 `trajectory_setpoint` 的速度和加速度前馈，默认目标机速度和加速度为 0，防止相对误差为零时仍产生运动命令。
 
-相对姿态有两种模式：
-
-- `FV_REL_ATT_MODE = 0`：roll、pitch 使用低延迟 EKF/IMU 姿态并保持水平，仅用视觉相对姿态控制 yaw；
-- `FV_REL_ATT_MODE = 1`：roll、pitch、yaw 三轴全部跟踪视觉相对姿态，属于兼容旧版本的模式。
-
-视觉相对姿态产生的角速度会乘以 `FV_REL_ATT_GAIN`，降低视觉、PnP 和传输延迟造成的振荡风险。
+相对姿态控制默认采用混合误差源：roll、pitch 使用 IMU/EKF 绝对姿态并保持水平目标，yaw 使用视觉相对
+姿态对齐 `FV_REL_YAW`。这样视觉 roll/pitch 噪声不会直接进入姿态闭环。将 `FV_REL_ATT_MODE` 设为 1
+时，可切换到兼容的三轴全视觉相对姿态模式，此时 `FV_REL_ROLL/PITCH/YAW` 均生效。
 
 ### 5.4 相对位姿丢失保持
 
 如果 OFFBOARD 中曾经激活过相对位姿控制，随后目标数据失效，模块会：
 
 1. 捕获丢失瞬间的 NED 位置和 yaw；
-2. 清除位置和发生变化的姿态外环积分，并同步微分历史；速度与角速度内环积分继续保留；
+2. 清除位置和姿态外环积分，同步外环及内环微分历史；速度与角速度内环积分继续保留；
 3. 位置、速度和加速度目标分别设为捕获位置、0、0；
 4. roll、pitch 设为 0，yaw 保持丢失瞬间的航向；
-5. 保持对接阶段的速度、加速度、角速度、角加速度和电机差动限幅。
+5. 继续使用普通模式共用的 PID 限幅和控制分配链路；当前实现没有额外的对接专用输出限幅。
 
-离开 OFFBOARD 后，相对位姿会话和丢失保持状态被清除。
+离开 OFFBOARD 或 fullvector 交还控制权后，相对位姿会话、运动学门控基准和丢失保持状态被统一清除。
 
 ### 5.5 STAB 自稳模式
 
@@ -363,15 +373,7 @@ v_sp = v_ff + Kp_pos .* e_p + Ki_pos .* I_p + Kd_pos .* d_e_p
 
 - 普通轨迹控制：`v_ff = command.velocity`；
 - 相对位姿控制：`v_ff = 0`；
-- 每个轴的 `v_sp` 限制在 `[-5, 5] m/s`；
-- 相对对接或丢失保持阶段，水平速度模长额外限制为 `FV_REL_VXY_MAX`。
-
-水平模长限制保持方向不变：
-
-```text
-if ||v_sp,xy|| > v_xy,max:
-    v_sp,xy = v_sp,xy · v_xy,max / ||v_sp,xy||
-```
+- 每个轴的 `v_sp` 限制在 `[-5, 5] m/s`。
 
 ### 7.3 速度内环：速度误差到期望加速度
 
@@ -390,42 +392,9 @@ a_sp = a_ff + Kp_vel .* e_v + Ki_vel .* I_v + Kd_vel .* d_e_v
 ```
 
 - 普通轨迹控制：`a_ff = command.acceleration`；
-- 相对位姿控制：`a_ff = 0`；
-- 相对对接或丢失保持阶段，水平加速度模长限制为 `FV_REL_AXY_MAX`。
+- 相对位姿控制：`a_ff = 0`。
 
 最终 `a_sp` 保存到 `_pos_acc_cmd`，供执行器分配使用。
-
-### 7.4 POSCTL 垂向反馈和积分保护
-
-POSCTL 的 Z 轴位置锁定时，垂向速度反馈融合 EKF `vz` 和位置导数 `z_deriv`：
-
-```text
-v_z,feedback = (1 - beta) · vz + beta · z_deriv
-beta = constrain(FV_Z_VEL_BLEND, 0, 1)
-```
-
-该融合仅用于 POSCTL 锁高；手动升降、OFFBOARD 和相对对接使用原始 `vz`。
-
-为了减小锁高快速制动阶段的积分残留，当垂向速度绝对值不小于 0.15 m/s 时冻结 Z 轴速度积分。进入低速区后恢复积分，以补偿质量、重力和悬停推力模型误差。
-
-POSCTL 中有效的 Z 轴积分增益为：
-
-```text
-Ki_z,effective = FV_VEL_I_Z · constrain(FV_PC_Z_I_SCALE, 0, 1)
-```
-
-`FV_PC_Z_I_SCALE` 可通过地面站在 `0～1` 范围内调整：`0` 关闭 POSCTL 垂向积分，`1` 使用完整的
-`FV_VEL_I_Z`。默认值仍为 `0.5`，但不在代码中写死最高有效值。
-
-积分项最终允许贡献的加速度还受到以下限制：
-
-```text
-|Ki_z,effective · I_v,z| <= FV_Z_INT_MAX
-```
-
-`FV_Z_INT_MAX` 最高为 `0.6 m/s²`。手动升降结束并重新锁高时，控制器只保留不超过该上限一半的
-已有积分贡献；随后在低速锁高阶段继续正常积分。这样既保留慢变悬停推力补偿，又不会把升降阶段的
-积分饱和原样带入松杆制动。
 
 ## 8. 姿态与角速度串级 PID
 
@@ -442,9 +411,7 @@ eta = [phi, theta, psi]^T
 
 三个轴的误差都被包装到 `[-pi, pi]`，防止跨越 ±π 时产生接近 2π 的跳变。
 
-切换绝对姿态和相对姿态误差源时，控制器只清除发生变化的姿态外环积分并同步姿态、角速度微分
-历史，保留角速度内环积分。默认模式仅 yaw 误差源变化，因此 roll/pitch 姿态积分也会保留；完整
-相对姿态模式才清除三轴姿态积分。
+切换绝对姿态和相对姿态误差源时，控制器清除姿态外环历史并同步角速度微分历史。
 
 ### 8.2 姿态外环：姿态误差到期望角速度
 
@@ -459,8 +426,6 @@ omega_sp = Kp_att .* e_att + Ki_att .* I_att + Kd_att .* d_e_att
 
 - STAB 或 POSCTL 的 yaw 杆活动时，yaw 姿态积分强制为 0；
 - 手动 yaw rate 控制切入时，yaw 姿态微分项置 0；
-- 相对姿态控制产生的角速度乘以 `FV_REL_ATT_GAIN`；
-- 对接及丢失保持阶段，各轴角速度限制为 `±FV_REL_RATE_MAX`；
 - STAB/POSCTL 的 yaw 角速度前馈叠加到 `omega_sp,z`，并限制在 ±2 rad/s。
 
 ### 8.3 角速度内环：角速度误差到期望角加速度
@@ -480,8 +445,6 @@ alpha_sp = Kp_w .* e_w + Ki_w .* I_w + Kd_w .* d_e_w
 - yaw 角速度积分状态限制为 ±0.3；
 - yaw 杆释放沿只清理一次旧控制残留，之后允许角速度积分持续补偿静态偏航力矩；
 - yaw 角加速度限制为 ±4 rad/s²。
-
-对接或丢失保持阶段，三个轴角加速度分别限制为 `±FV_REL_ACC_MAX`。
 
 ## 9. 电机转速和倾转角算法
 
@@ -536,111 +499,52 @@ alpha_base4 =  sqrt(2)·theta_sp - sqrt(2)·phi_sp
 | 3 | 左前 |
 | 4 | 右后 |
 
-### 9.3 悬停和垂向角速度平方
+### 9.3 电机角速度分量
 
-单个电机的悬停角速度估计为：
+分配器先按 `FV_YAW_MIX_WT` 取出电机承担的 yaw 力矩，再将各轴角加速度和垂向加速度换算为带符号的电机角速度分量：
 
 ```text
-omega_hover = sqrt(m · g / (4 · K_F))
+w_roll  = signed_sqrt(Ixx · alpha_x / (4 · K_F · d_arm))
+w_pitch = signed_sqrt(Iyy · alpha_y / (4 · K_F · d_arm))
+w_yaw   = signed_sqrt(FV_YAW_MIX_WT · Izz · alpha_z / (4 · K_F · distance))
+w_fz    = signed_sqrt(m · (g - a_z,sp) / (4 · K_F))
 ```
 
-根据 NED 垂向期望加速度计算集体角速度平方：
+其中 `d_arm = FV_MOTOR_DIST / sqrt(2)`。四路角速度按原始符号关系直接叠加：
 
 ```text
-u_collective = omega_collective^2
-             = constrain(m · (g - a_z,sp) / (4 · K_F), 0, u_max)
+omega_1 = -w_roll + w_pitch + w_yaw + w_fz
+omega_2 =  w_roll - w_pitch + w_yaw + w_fz
+omega_3 =  w_roll + w_pitch - w_yaw + w_fz
+omega_4 = -w_roll - w_pitch - w_yaw + w_fz
 ```
 
-控制器在角速度平方域完成集体推力和力矩分配。由于推力与角速度平方近似线性，该处理不会把
-角速度差动与悬停角速度相加后再次平方，从而避免小控制量被交叉项放大。
+每路结果限制在 `[0, 20000]`。
 
-### 9.4 角加速度到电机差动
+### 9.4 yaw 公共倾转
 
-令：
-
-```text
-d_arm = FV_MOTOR_DIST / sqrt(2)
-```
-
-roll、pitch 的角速度平方差动，以及由电机反扭矩承担的 yaw 差动为：
+剩余的 `1 - FV_YAW_MIX_WT` 部分由四个舵机同向倾转承担：
 
 ```text
-delta_u_roll  = Ixx · alpha_x / (4 · K_F · d_arm)
-delta_u_pitch = Iyy · alpha_y / (4 · K_F · d_arm)
-
-tau_z,sp      = Izz · alpha_z
-tau_z,motor   = FV_YAW_MIX_WT · tau_z,sp
-delta_u_yaw   = tau_z,motor / (4 · K_M)
-```
-
-`K_M` 无效时自动关闭电机 yaw 分量，由公共倾转承担全部 yaw 力矩。在对接或丢失保持阶段，
-三个角速度平方差动的绝对值之和受到集体量比例限制：
-
-```text
-|delta_u_roll| + |delta_u_pitch| + |delta_u_yaw|
-    <= FV_REL_MOT_DIF · max(u_collective, 1)
-```
-
-超过限制时对三个差动分量等比例缩放，保持混控方向和相对比例不变。
-
-### 9.5 分配可观测性和 anti-windup
-
-分配器记录集体推力下限/上限、差动缩放、舵机倾转以及 yaw 公共倾转饱和，并用最终电机和舵机
-输出反算实际可实现的 NED 加速度与机体系角加速度。控制器使用上一周期的残差
-`u_achieved - u_requested` 修正速度环和角速度环积分；位置与姿态外环的本地目标限幅也采用同样的
-反算方式。`FV_AW_GAIN` 控制积分退出饱和的速度，设为 `0` 可关闭反算。
-
-### 9.6 四电机混控
-
-四个电机角速度平方命令为：
-
-```text
-u_1 = u_collective - delta_u_roll + delta_u_pitch + delta_u_yaw
-u_2 = u_collective + delta_u_roll - delta_u_pitch + delta_u_yaw
-u_3 = u_collective + delta_u_roll + delta_u_pitch - delta_u_yaw
-u_4 = u_collective - delta_u_roll - delta_u_pitch - delta_u_yaw
-```
-
-如果任一路超出 `[0, u_max]`，控制器在保持集体量不变的前提下等比例压缩四路差动。最终使用
-`omega_i = sqrt(u_i)` 供动力学估算使用。
-
-### 9.7 yaw 公共倾转
-
-除了电机差动，yaw 的剩余力矩还通过四个舵机同向公共倾转产生。电机差动受到对接限幅或
-输出饱和压缩时，先按实际差动缩放量计算电机已经产生的力矩，再把余量交给公共倾转：
-
-```text
-tau_z,motor,actual = 4 · K_M · delta_u_yaw · differential_scale
-tau_z,tilt         = tau_z,sp - tau_z,motor,actual
-```
-
-当前几何模型中，正公共倾角产生负 yaw 力矩，因此公共倾角使用反号：
-
-```text
+tau_z,tilt = (1 - FV_YAW_MIX_WT) · Izz · alpha_z
 alpha_yaw = constrain(
-    -tau_z,tilt / (K_F · distance · sum(u_i)),
+    tau_z,tilt / (K_F · distance · sum(omega_i²)),
     -FV_YAW_TILT_MAX,
     +FV_YAW_TILT_MAX)
-```
 
-最终每个舵机角度为：
-
-```text
 alpha_i = constrain(alpha_base_i + alpha_yaw,
                     -FV_TILT_MAX,
                     +FV_TILT_MAX)
 ```
 
-因此 yaw 由电机反扭矩差动和公共倾转共同完成，`FV_YAW_MIX_WT` 是两条通道之间的力矩分配比例，
-默认 `0.5`，可通过地面站在 `[0, 1]` 内在线调整，不会让两条通道分别重复承担完整的 yaw 力矩。
+### 9.5 执行器归一化
 
-### 9.8 执行器归一化
-
-电机推力近似满足 `T ∝ omega^2`。以悬停点为标定基准：
+电机按悬停角速度和 `FV_HOVER_THR` 归一化：
 
 ```text
+omega_hover = sqrt(m · g / (4 · K_F))
 motor_i = constrain(
-    FV_HOVER_THR · u_i / omega_hover^2,
+    FV_HOVER_THR · (omega_i / omega_hover)²,
     0,
     1)
 ```
@@ -651,8 +555,7 @@ motor_i = constrain(
 servo_i = constrain(alpha_i / FV_TILT_MAX, -1, 1)
 ```
 
-生成的两组命令会被缓存。当姿态状态短时掉帧时，控制器可以刷新时间戳并重发上一拍命令。
-安全输出或控制权交还会使该缓存失效，避免后续误将旧命令当作可保持输出。
+生成的两组命令会被缓存，用于姿态状态短时掉帧时重发上一拍输出。
 
 ## 10. 动力学估算
 
@@ -775,14 +678,7 @@ RC 请求切回 PX4 原生控制器时，只发布四路倾转舵机中位命令
 - `FV_ATT_[P/I/D]_[X/Y/Z]`：姿态外环，X/Y/Z 对应 roll/pitch/yaw；
 - `FV_ANG_VEL_[P/I/D]_[X/Y/Z]`：角速度内环。
 
-### 13.2 POSCTL 垂向控制
-
-- `FV_PC_Z_I_SCALE`：POSCTL 垂向积分增益缩放；
-- `FV_Z_VEL_BLEND`：`vz` 与 `z_deriv` 的融合权重；
-- `FV_Z_INT_MAX`：垂向积分允许贡献的最大加速度。
-- `FV_AW_GAIN`：限幅和执行器分配残差的反算 anti-windup 增益。
-
-### 13.3 飞行器和执行器模型
+### 13.2 飞行器和执行器模型
 
 - `FV_MASS`、`FV_GRAVITY`：质量和重力；
 - `FV_MOTOR_DIST`：电机到机体中心距离；
@@ -794,23 +690,21 @@ RC 请求切回 PX4 原生控制器时，只发布四路倾转舵机中位命令
 - `FV_YAW_TILT_MAX`：yaw 公共倾转角上限；
 - `FV_YAW_MIX_WT`：yaw 期望力矩中由电机反扭矩差动承担的比例，默认 0.5，地面站可调。
 
-### 13.4 相对位姿控制
+### 13.3 相对位姿控制
 
 - `FV_REL_POS_X/Y/Z`：期望相对位置；
-- `FV_REL_ROLL/PITCH/YAW`：期望相对姿态；
+- `FV_REL_ATT_MODE`：相对姿态误差源，默认 0 表示 IMU roll/pitch 加视觉相对 yaw；
+- `FV_REL_ROLL/PITCH/YAW`：期望相对姿态，其中 roll/pitch 仅在模式 1 生效；
 - `FV_REL_LOSS_T`：相对位姿超时时间，默认 0.25 s；
+- `FV_REL_DBNC_T`：视觉有效/无效状态切换迟滞，默认 0.08 s；
 - `FV_REL_HOLD_T`：目标丢失后的最长 NED 位置/航向保持时间，超时请求 POSCTL；
 - `FV_REL_POS_JMP`、`FV_REL_VEL_G`：相对位置基础跳变和随接收间隔扩展的速度门控；
 - `FV_REL_ANG_JMP`、`FV_REL_RATE_G`：相对姿态基础跳变和角速度门控；
-- `FV_REL_ATT_MODE`、`FV_REL_ATT_GAIN`：相对姿态模式和带宽缩放；
-- `FV_REL_VXY_MAX`、`FV_REL_AXY_MAX`：对接水平速度、加速度上限；
-- `FV_REL_RATE_MAX`、`FV_REL_ACC_MAX`：对接角速度、角加速度上限，默认分别为 0.5 rad/s 和
-  2.0 rad/s²；
-- `FV_REL_MOT_DIF`：对接电机角速度平方差动相对集体量上限。
 
-### 13.5 启用和控制器切换
+### 13.4 启用和控制器切换
 
 - `FV_ENABLE`：允许 fullvector 输出；
+- `FV_DBG_EN`：启用 5 Hz 合并控制摘要打印，默认关闭；
 - `FV_RC_SW_EN`：启用 RC 救援切换；
 - `FV_RC_SW_CH`：选择 AUX1～AUX6；
 - `FV_RC_SW_THR`：切换阈值；
@@ -821,7 +715,7 @@ RC 请求切回 PX4 原生控制器时，只发布四路倾转舵机中位命令
 - 姿态外环使用欧拉角 PID，不是四元数或 SO(3) 几何控制；
 - 执行器分配是基于当前构型推导的显式公式，不是带约束的矩阵优化分配器；
 - 水平加速度转换到机体系时只使用当前 yaw；
-- `controlAllocation()` 的一步动力学积分不会修正估计器状态；其中实际加速度和角加速度会用于分配诊断及 anti-windup；
+- `controlAllocation()` 的一步动力学积分不会修正估计器状态；
 - STAB 的最大姿态、最大 yaw rate 和最大水平加速度目前是代码内常量，不是 PX4 参数；
 - 相对位姿分支假设目标机速度和加速度为零，没有使用目标机运动前馈；
 - PID 微分直接对误差做差分，未单独配置低通滤波器，因此状态噪声、视觉延迟和 `dt` 抖动会直接影响微分项；

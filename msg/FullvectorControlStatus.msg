@@ -28,9 +28,6 @@ bool relative_pose_loss_hold
 # 对接目标丢失超过最长保持时间，已请求回退 POSCTL；在模式切换完成前仍输出最后安全保持目标。
 bool relative_pose_hold_timed_out
 
-# 0：IMU 保持 roll/pitch、视觉对齐 yaw；1：旧版完整相对姿态控制。
-uint8 relative_attitude_mode
-
 # 当前目标及其视觉样本时间，便于在 ULog 中计算链路延迟。
 uint8 target_id
 uint64 target_pose_timestamp_sample
@@ -57,27 +54,3 @@ uint8 REL_POSE_REJECT_RX_TIMEOUT = 64
 # 最近一次拒绝原因和累计拒绝次数。
 uint8 relative_pose_reject_reason
 uint32 relative_pose_reject_count
-
-# 定点模式垂向位置锁定和速度反馈诊断。
-bool posctl_z_hold_active
-float32 vertical_velocity_feedback
-float32 vertical_velocity_integral_acceleration
-
-# 分配器与 anti-windup 诊断。
-uint16 ALLOC_SAT_NONE = 0
-uint16 ALLOC_SAT_COLLECTIVE_LOW = 1
-uint16 ALLOC_SAT_COLLECTIVE_HIGH = 2
-uint16 ALLOC_SAT_DIFFERENTIAL = 4
-uint16 ALLOC_SAT_TILT = 8
-uint16 ALLOC_SAT_YAW_TILT = 16
-# 当前分配饱和位和差动缩放比例。
-uint16 allocation_saturation_flags
-float32 allocation_differential_scale
-# 位置、姿态通道本周期是否执行积分反算。
-bool position_anti_windup_active
-bool attitude_anti_windup_active
-# 分配前请求值和分配后实际可实现值。
-float32[3] acceleration_setpoint
-float32[3] acceleration_achieved
-float32[3] angular_acceleration_setpoint
-float32[3] angular_acceleration_achieved

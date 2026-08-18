@@ -34,12 +34,14 @@
 /**
  * @file fullvector_control.hpp
  *
- * Full-vector quadcopter controller declarations, uORB interfaces and tunable parameters.
+ * 全矢量四旋翼控制器声明、uORB 接口与可调参数。
  *
  * @author Mingyang Wang <3112311639@qq.com>
  */
 
 #pragma once
+
+#include "RelativePoseStateMachine.hpp"
 
 #include <drivers/drv_hrt.h>
 #include <lib/perf/perf_counter.h>
@@ -88,7 +90,7 @@ struct UAVStates {
 struct UAVCommand {
 	Vector3f position;                      // NED 位置，m。
 	Vector3f velocity;                      // NED 速度，m/s。
-	Vector3f acceleration;                  // NED 加速度，m/s^2。
+	Vector3f acceleration;                  // NED 加速度，m/s²。
 	Vector3f Euler_angles;                  // 欧拉角，rad。
 	Vector3f angular_velocity;              // 机体系角速度，rad/s。
 };
@@ -113,46 +115,52 @@ public:
 
 	/**
 	 * 运行位置和速度串级 PID。
-	 * @param state current UAV state
-	 * @param command desired command
-	 * @param dt control period in seconds
+	 * @param state 当前飞行器状态
+	 * @param command 控制目标
+	 * @param dt 控制周期，s
 	 */
 	void PositionControl(const UAVStates &state, const UAVCommand &command, const float dt);
 
 	/**
 	 * 运行姿态和角速度串级 PID。
-	 * @param state current UAV state
-	 * @param command desired command
-	 * @param dt control period in seconds
-	 * @param stabilized_mode true in STAB mode
+	 * @param state 当前飞行器状态
+	 * @param command 控制目标
+	 * @param dt 控制周期，s
+	 * @param stabilized_mode 是否为 STAB 模式
 	 */
 	void AttitudeControl(const UAVStates &state, UAVCommand &command, const float dt, bool stabilized_mode);
 
-	void calculateMotorCommand(const UAVStates &state, const UAVCommand &command);
-	void controlAllocation(const UAVStates &state, const UAVCommand &command);
+	void calculateMotorCommand(const UAVStates &state, const UAVCommand &command); // 生成执行器指令。
+	void controlAllocation(const UAVStates &state, const UAVCommand &command); // 执行分配与响应预测。
 
 private:
+	enum class AttitudeErrorSource : uint8_t {
+		Absolute = 0,
+		RelativeYaw,
+		FullRelative,
+	};
+
 	void Run() override;
 
 	/**
 	 * 同步 PX4 参数。
-	 * @param force force an update without a notification
+	 * @param force 是否强制更新
 	 */
 	void parameters_update(bool force);
 	void resetPositionPidState();
 	void resetAttitudePidState();
 	void resetPidState();
+	void resetRelativePoseSession();
 	void publishSafeActuatorFallback();
 	bool publishLastActuatorCommand();
 	void publishNeutralTiltServos();
+	void printControlDebug(hrt_abstime now);
 	void publishFullvectorControlStatus(bool fullvector_active, bool native_requested, bool rc_switch_valid,
 					    float rc_switch_value);
-	// 对接失联回退、输入门控和反算 anti-windup。
+	// 对接失联回退和输入门控。
 	void requestPositionControlFallback(hrt_abstime now);
 	bool evaluateNativeControllerRequest(float &rc_switch_value, bool &rc_switch_valid);
 	bool validateRelativePoseSample(const target_relative_pose_s &candidate, hrt_abstime now);
-	bool applyAntiWindup(Vector3f &integral_state, const Vector3f &output_residual,
-			     const Vector3f &integral_gain, const bool saturated[3], float dt);
 
 	bool updateUAVState();
 	bool updateAttitudeStateOnly();
@@ -164,6 +172,7 @@ private:
 
 	DEFINE_PARAMETERS(
 		(ParamBool<px4::params::FV_ENABLE>) _param_fv_enable,
+		(ParamBool<px4::params::FV_DBG_EN>) _param_fv_debug_enable,
 		// RC 控制权切换。
 		(ParamBool<px4::params::FV_RC_SW_EN>) _param_fv_rc_sw_en,
 		(ParamInt<px4::params::FV_RC_SW_CH>) _param_fv_rc_sw_ch,
@@ -173,9 +182,8 @@ private:
 		(ParamFloat<px4::params::FV_REL_POS_X>) _param_fv_rel_pos_x,
 		(ParamFloat<px4::params::FV_REL_POS_Y>) _param_fv_rel_pos_y,
 		(ParamFloat<px4::params::FV_REL_POS_Z>) _param_fv_rel_pos_z,
-		(ParamFloat<px4::params::FV_REL_VXY_MAX>) _param_fv_rel_vxy_max,
-		(ParamFloat<px4::params::FV_REL_AXY_MAX>) _param_fv_rel_axy_max,
 		(ParamFloat<px4::params::FV_REL_LOSS_T>) _param_fv_rel_loss_t,
+		(ParamFloat<px4::params::FV_REL_DBNC_T>) _param_fv_rel_debounce_t,
 		// 相对位姿最长保持和异常值门控。
 		(ParamFloat<px4::params::FV_REL_HOLD_T>) _param_fv_rel_hold_t,
 		(ParamFloat<px4::params::FV_REL_POS_JMP>) _param_fv_rel_pos_jump,
@@ -183,10 +191,6 @@ private:
 		(ParamFloat<px4::params::FV_REL_ANG_JMP>) _param_fv_rel_angle_jump,
 		(ParamFloat<px4::params::FV_REL_RATE_G>) _param_fv_rel_rate_gate,
 		(ParamInt<px4::params::FV_REL_ATT_MODE>) _param_fv_rel_att_mode,
-		(ParamFloat<px4::params::FV_REL_ATT_GAIN>) _param_fv_rel_att_gain,
-		(ParamFloat<px4::params::FV_REL_RATE_MAX>) _param_fv_rel_rate_max,
-		(ParamFloat<px4::params::FV_REL_ACC_MAX>) _param_fv_rel_acc_max,
-		(ParamFloat<px4::params::FV_REL_MOT_DIF>) _param_fv_rel_motor_diff,
 		(ParamFloat<px4::params::FV_REL_ROLL>) _param_fv_rel_roll,
 		(ParamFloat<px4::params::FV_REL_PITCH>) _param_fv_rel_pitch,
 		(ParamFloat<px4::params::FV_REL_YAW>) _param_fv_rel_yaw,
@@ -205,9 +209,6 @@ private:
 		(ParamFloat<px4::params::FV_VEL_I_X>)             _param_fv_vel_i_x,
 		(ParamFloat<px4::params::FV_VEL_I_Y>)             _param_fv_vel_i_y,
 		(ParamFloat<px4::params::FV_VEL_I_Z>)             _param_fv_vel_i_z,
-		(ParamFloat<px4::params::FV_PC_Z_I_SCALE>)         _param_fv_pc_z_i_scale,
-		(ParamFloat<px4::params::FV_Z_VEL_BLEND>)          _param_fv_z_vel_blend,
-		(ParamFloat<px4::params::FV_Z_INT_MAX>)            _param_fv_z_int_max,
 		(ParamFloat<px4::params::FV_VEL_D_X>)             _param_fv_vel_d_x,
 		(ParamFloat<px4::params::FV_VEL_D_Y>)             _param_fv_vel_d_y,
 		(ParamFloat<px4::params::FV_VEL_D_Z>)             _param_fv_vel_d_z,
@@ -238,8 +239,6 @@ private:
 		(ParamFloat<px4::params::FV_TILT_MAX>)		  _param_fv_tilt_max,
 		(ParamFloat<px4::params::FV_YAW_TILT_MAX>)	  _param_fv_yaw_tilt_max,
 		(ParamFloat<px4::params::FV_YAW_MIX_WT>)	  _param_fv_yaw_mix_wt,
-		// 分配饱和反算增益。
-		(ParamFloat<px4::params::FV_AW_GAIN>)		  _param_fv_aw_gain,
 		(ParamFloat<px4::params::FV_INERTIA_XX>)          _param_fv_inertia_xx,
 		(ParamFloat<px4::params::FV_INERTIA_YY>)          _param_fv_inertia_yy,
 		(ParamFloat<px4::params::FV_INERTIA_ZZ>)	  _param_fv_inertia_zz,
@@ -279,12 +278,9 @@ private:
 	trajectory_setpoint_s _trajectory_setpoint{};
 	target_relative_pose_s _target_relative_pose{};
 	bool _target_relative_pose_valid{false};
-	// 相对位姿状态和失联保持快照。
+	// 相对位姿状态机和当前周期唯一的相对控制判据。
+	RelativePoseStateMachine _relative_pose_state_machine{};
 	bool _relative_pose_active{false};
-	bool _relative_pose_session_active{false};
-	bool _relative_pose_loss_hold{false};
-	bool _relative_pose_hold_timed_out{false};
-	bool _relative_pose_just_lost{false};
 	bool _relative_pose_hold_initialized{false};
 	Quatf _relative_attitude{};
 	Vector3f _relative_euler{};
@@ -294,7 +290,6 @@ private:
 	hrt_abstime _last_target_relative_pose_update{0};
 	// 相对位姿接收、失联和异常拒绝诊断。
 	hrt_abstime _last_accepted_target_pose_update{0};
-	hrt_abstime _relative_pose_loss_started{0};
 	hrt_abstime _last_fallback_request{0};
 	uint64_t _target_pose_timestamp_sample{0};
 	uint8_t _target_pose_target_id{0};
@@ -312,7 +307,7 @@ private:
 
 	// 飞行器物理参数。
 	float mass{};       // 总质量，kg。
-	float gravity{};    // 重力加速度，m/s^2。
+	float gravity{};    // 重力加速度，m/s²。
 	float distance{};   // 电机中心力臂，m。
 	float K_F{};        // 推力系数。
 	float K_M{};        // 反扭矩系数。
@@ -323,6 +318,7 @@ private:
 	// 时间和状态新鲜度；状态等级由各消息时间戳独立计算。
 	hrt_abstime _last_run_time{0};
 	hrt_abstime _last_fault_warning_time{0};
+	hrt_abstime _last_debug_print_time{0};
 	hrt_abstime _last_position_update{0};
 	hrt_abstime _last_velocity_update{0};
 	hrt_abstime _last_attitude_update{0};
@@ -341,7 +337,7 @@ private:
 	actuator_motors_s _last_motor_output{};
 	actuator_servos_s _last_tilt_output{};
 	bool _last_actuator_output_valid{false};
-	uint8_t _state_age_level{0}; // 0=fresh, 1=aging, 2=stale-hold, 3=stale-fail
+	uint8_t _state_age_level{0}; // 0 正常，1 告警，2 保持，3 失效。
 	uint8_t _position_state_age_level{0};
 	uint8_t _attitude_state_age_level{0};
 
@@ -350,17 +346,6 @@ private:
 
 	Vector3f _pos_acc_cmd{};       // NED 期望加速度。
 	Vector3f _att_ang_acc_cmd{};   // 机体系期望角加速度。
-	// 分配器实际能力、请求残差和 anti-windup 状态。
-	Vector3f _allocation_accel_achieved{};
-	Vector3f _allocation_ang_acc_achieved{};
-	Vector3f _allocation_accel_residual{};
-	Vector3f _allocation_ang_acc_residual{};
-	float _allocation_differential_scale{1.0f};
-	uint16_t _allocation_saturation_flags{0};
-	bool _position_anti_windup_active{false};
-	bool _attitude_anti_windup_active{false};
-	bool _position_allocation_saturated[3] {};
-	bool _attitude_allocation_saturated[3] {};
 
 	// 执行器分配结果，编号顺序为右前、左后、左前、右后。
 	float alpha_offset1{0.0f};
@@ -381,10 +366,6 @@ private:
 	// 有限位置目标锁定对应 NED 轴；NaN 表示该轴仅跟踪速度。
 	bool _position_axis_locked[3] {};
 	bool _position_outer_uses_relative_pose{false};
-	// POSCTL 垂向控制状态。
-	bool _posctl_z_hold_active{false};
-	float _vertical_velocity_feedback{0.0f};
-	float _vertical_velocity_integral_acceleration{0.0f};
 
 	// 姿态和角速度 PID 状态。
 	Vector3f _att_error_int{};
@@ -392,5 +373,5 @@ private:
 	Vector3f _ang_vel_error_int{};
 	Vector3f _ang_vel_error_prev{};
 	bool _att_pid_state_initialized{false};
-	bool _attitude_outer_uses_relative_pose{false};
+	AttitudeErrorSource _attitude_error_source{AttitudeErrorSource::Absolute};
 };
