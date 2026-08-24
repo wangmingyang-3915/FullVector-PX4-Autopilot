@@ -122,6 +122,7 @@ void FullvectorControl::resetPidState()
 {
 	resetPositionPidState();
 	resetAttitudePidState();
+	_actuator_saturated = false;
 }
 
 // 结束并清理当前对接会话。
@@ -682,6 +683,34 @@ void FullvectorControl::Run()
 	_vehicle_status_sub.update(&_vehicle_status);
 	_trajectory_setpoint_sub.update(&_trajectory_setpoint);
 
+	// 校验主 IMU；飞行中发生主传感器切换时清理旧传感器对应的控制历史。
+	if (_sensor_selection_sub.update(&_sensor_selection)) {
+		const bool selection_initialized = (_selected_accel_device_id != 0) && (_selected_gyro_device_id != 0);
+		const bool selection_changed = selection_initialized
+					       && ((_sensor_selection.accel_device_id != _selected_accel_device_id)
+						   || (_sensor_selection.gyro_device_id != _selected_gyro_device_id));
+
+		if (selection_changed) {
+			PX4_WARN("primary IMU changed: acc %lu->%lu, gyro %lu->%lu",
+				 (unsigned long)_selected_accel_device_id, (unsigned long)_sensor_selection.accel_device_id,
+				 (unsigned long)_selected_gyro_device_id, (unsigned long)_sensor_selection.gyro_device_id);
+			resetPidState();
+			_command_initialized = false;
+			_last_run_time = 0;
+			_last_control_nav_state = vehicle_status_s::NAVIGATION_STATE_MAX;
+			_posctl_acceleration_previous_valid = false;
+
+		} else if (!selection_initialized && (_sensor_selection.accel_device_id != 0)
+			   && (_sensor_selection.gyro_device_id != 0)) {
+			PX4_INFO("primary IMU: acc %lu, gyro %lu",
+				 (unsigned long)_sensor_selection.accel_device_id,
+				 (unsigned long)_sensor_selection.gyro_device_id);
+		}
+
+		_selected_accel_device_id = _sensor_selection.accel_device_id;
+		_selected_gyro_device_id = _sensor_selection.gyro_device_id;
+	}
+
 	// 相对位姿接收超时阈值。
 	const hrt_abstime relative_pose_timeout = static_cast<hrt_abstime>(
 				math::max(_param_fv_rel_loss_t.get(), 0.1f) * 1_s);
@@ -813,6 +842,8 @@ void FullvectorControl::Run()
 		resetPidState();
 		_last_run_time = 0;
 		_command_initialized = false;
+		_last_control_nav_state = vehicle_status_s::NAVIGATION_STATE_MAX;
+		_posctl_acceleration_previous_valid = false;
 	}
 
 	_controller_was_active = true;
@@ -911,6 +942,27 @@ void FullvectorControl::Run()
 		_current_command.angular_velocity.zero();
 		_command_initialized = true;
 	}
+
+	// STAB 切入 POSCTL 时只重置位置/速度环，并从当前飞行状态开始接管。
+	// 姿态和角速度环保持连续，避免切模破坏已经稳定的内环状态。
+	const bool entering_posctl = posctl_mode
+				      && (_last_control_nav_state != vehicle_status_s::NAVIGATION_STATE_POSCTL);
+	if (entering_posctl) {
+		resetPositionPidState();
+		_current_command.position = state_for_control.position;
+		_current_command.velocity.zero();
+		_current_command.acceleration.zero();
+		_posctl_yaw_sp = state_for_control.Euler_angles(2);
+		_posctl_yaw_sp_initialized = true;
+		_posctl_acceleration_previous = _pos_acc_cmd;
+		_posctl_acceleration_previous_valid = true;
+	}
+
+	if (!posctl_mode) {
+		_posctl_acceleration_previous_valid = false;
+	}
+
+	_last_control_nav_state = _vehicle_status.nav_state;
 
 	// 进入保持态时锁定当前位置与航向。
 	if (relative_pose_holding && !_relative_pose_hold_initialized) {
@@ -1109,9 +1161,35 @@ void FullvectorControl::Run()
 	if (run_position_control) {
 		PositionControl(state_for_control, _current_command, _dt);
 
+		if (posctl_mode) {
+			// 对 POSCTL 最终位置环输出限制变化率，避免轨迹更新或估计噪声直接形成执行器阶跃。
+			const float jerk_max = math::max(_param_fv_jerk_max.get(), 0.0f); // m/s^3
+
+			if (_posctl_acceleration_previous_valid) {
+				Vector2f horizontal_delta(_pos_acc_cmd(0) - _posctl_acceleration_previous(0),
+							  _pos_acc_cmd(1) - _posctl_acceleration_previous(1));
+				const float acceleration_step_max = jerk_max * _dt;
+				const float horizontal_delta_norm = horizontal_delta.norm();
+
+				if (horizontal_delta_norm > acceleration_step_max) {
+					horizontal_delta *= acceleration_step_max / horizontal_delta_norm;
+				}
+
+				_pos_acc_cmd(0) = _posctl_acceleration_previous(0) + horizontal_delta(0);
+				_pos_acc_cmd(1) = _posctl_acceleration_previous(1) + horizontal_delta(1);
+				_pos_acc_cmd(2) = _posctl_acceleration_previous(2) + math::constrain(
+							  _pos_acc_cmd(2) - _posctl_acceleration_previous(2),
+							  -acceleration_step_max, acceleration_step_max);
+			}
+
+			_posctl_acceleration_previous = _pos_acc_cmd;
+			_posctl_acceleration_previous_valid = true;
+		}
+
 	} else if (!stabilized_mode) {
 		resetPositionPidState();
 		_pos_acc_cmd.zero();
+		_posctl_acceleration_previous_valid = false;
 
 		if (shouldLogFaultWarning(now)) {
 			PX4_WARN("position stale, skipping position control");
@@ -1121,6 +1199,16 @@ void FullvectorControl::Run()
 	// 姿态控制后生成并发布执行器指令。
 	AttitudeControl(state_for_control, _current_command, _dt, stabilized_mode);
 	controlAllocation(state_for_control, _current_command);
+
+	// 执行器已经饱和时泄放积分，防止下一拍继续沿饱和方向累积。
+	if (_actuator_saturated) {
+		const float integral_decay = math::constrain(1.0f - 2.0f * _dt, 0.0f, 1.0f);
+		_pos_error_int *= integral_decay;
+		_vel_error_int *= integral_decay;
+		_att_error_int *= integral_decay;
+		_ang_vel_error_int *= integral_decay;
+	}
+
 	printControlDebug(now);
 
 	perf_end(_loop_perf);
@@ -1198,11 +1286,19 @@ void FullvectorControl::PositionControl(const UAVStates &state, const UAVCommand
 			_pos_error_int(i) = 0.0f;
 			_pos_error_prev(i) = ep(i);
 		}
+
+		// 有限位置目标与 NaN 速度目标互相切换时同步速度误差历史，
+		// 避免模式管理器首个 trajectory_setpoint 造成速度 D 项冲击。
+		if (position_axis_locked[i] != _position_axis_locked[i]) {
+			initialize_velocity_error = true;
+		}
 	}
 
 	// 位置外环生成期望速度。
 	const Vector3f dep = (ep - _pos_error_prev) / dt;
-	_pos_error_int += ep * dt;
+	if (!_actuator_saturated) {
+		_pos_error_int += ep * dt;
+	}
 
 	// 限制位置积分，避免积分饱和。
 	for (int i = 0; i < 3; i++) {
@@ -1232,7 +1328,9 @@ void FullvectorControl::PositionControl(const UAVStates &state, const UAVCommand
 	}
 
 	const Vector3f dev = (ev - _vel_error_prev) / dt;
-	_vel_error_int += ev * dt;
+	if (!_actuator_saturated) {
+		_vel_error_int += ev * dt;
+	}
 
 	// 限制速度积分，避免积分饱和。
 	for (int i = 0; i < 3; i++) {
@@ -1246,7 +1344,25 @@ void FullvectorControl::PositionControl(const UAVStates &state, const UAVCommand
 
 	// 对接模式不叠加全局轨迹加速度前馈。
 	const Vector3f acceleration_ff = use_relative_pose ? Vector3f{} : command.acceleration;
-	const Vector3f acc_cmd = acceleration_ff + vel_kp.emult(ev) + vel_ki.emult(_vel_error_int) + vel_kd.emult(dev);
+	Vector3f acc_cmd = acceleration_ff + vel_kp.emult(ev) + vel_ki.emult(_vel_error_int) + vel_kd.emult(dev);
+
+	if (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_POSCTL) {
+		// POSCTL 只输出飞行器能够安全实现的加速度，防止误差扩大后执行器持续顶死。
+		const float horizontal_acceleration_max = math::max(_param_fv_acc_hor_max.get(), 0.0f); // m/s^2
+		const float upward_acceleration_max = math::max(_param_fv_acc_up_max.get(), 0.0f); // m/s^2
+		const float downward_acceleration_max = math::constrain(_param_fv_acc_down_max.get(), 0.0f,
+						gravity); // m/s^2
+		const float horizontal_acceleration = Vector2f(acc_cmd(0), acc_cmd(1)).norm();
+
+		if (horizontal_acceleration > horizontal_acceleration_max) {
+			const float scale = horizontal_acceleration_max / horizontal_acceleration;
+			acc_cmd(0) *= scale;
+			acc_cmd(1) *= scale;
+		}
+
+		// NED Z 轴向下为正，因此向上限幅为负值、向下限幅为正值。
+		acc_cmd(2) = math::constrain(acc_cmd(2), -upward_acceleration_max, downward_acceleration_max);
+	}
 	// 保存执行器计算所需的加速度指令。
 	_pos_acc_cmd = acc_cmd;
 
@@ -1357,7 +1473,9 @@ void FullvectorControl::AttitudeControl(const UAVStates &state, UAVCommand &comm
 		_att_error_int(2) = 0.0f;
 	}
 
-	_att_error_int += e_att * dt;
+	if (!_actuator_saturated) {
+		_att_error_int += e_att * dt;
+	}
 
 	if (stabilized_mode || posctl_yaw_rate_active) {
 		_att_error_int(2) = 0.0f;
@@ -1393,7 +1511,9 @@ void FullvectorControl::AttitudeControl(const UAVStates &state, UAVCommand &comm
 	}
 
 	const Vector3f de_w = (e_w - _ang_vel_error_prev) / dt;
-	_ang_vel_error_int += e_w * dt;
+	if (!_actuator_saturated) {
+		_ang_vel_error_int += e_w * dt;
+	}
 
 	// 限制角速度积分，避免积分饱和。
 	for (int i = 0; i < 3; i++) {
@@ -1569,6 +1689,14 @@ void FullvectorControl::calculateMotorCommand(const UAVStates &state, const UAVC
 	motor_tilt.control[1] = math::constrain(alpha_offset2 / tilt_angle_max_rad, -1.0f, 1.0f);
 	motor_tilt.control[2] = math::constrain(alpha_offset3 / tilt_angle_max_rad, -1.0f, 1.0f);
 	motor_tilt.control[3] = math::constrain(alpha_offset4 / tilt_angle_max_rad, -1.0f, 1.0f);
+
+	// 记录实际发布端的饱和状态，供下一控制周期执行积分保护。
+	_actuator_saturated = false;
+
+	for (int i = 0; i < 4; i++) {
+		_actuator_saturated |= (motor_speed.control[i] <= 0.01f) || (motor_speed.control[i] >= 0.99f);
+		_actuator_saturated |= fabsf(motor_tilt.control[i]) >= 0.99f;
+	}
 
 	// 缓存有效输出，供短时状态掉帧时保持。
 	_last_motor_output = motor_speed;

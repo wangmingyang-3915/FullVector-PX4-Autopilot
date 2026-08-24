@@ -394,6 +394,12 @@ a_sp = a_ff + Kp_vel .* e_v + Ki_vel .* I_v + Kd_vel .* d_e_v
 - 普通轨迹控制：`a_ff = command.acceleration`；
 - 相对位姿控制：`a_ff = 0`。
 
+POSCTL 中，水平加速度向量幅值由 `FV_ACC_HOR_MAX` 限制，默认为 `20 m/s²`；
+向上和向下加速度分别由 `FV_ACC_UP_MAX` 和 `FV_ACC_DOWN_MAX` 限制，默认为
+`20 m/s²` 和 `8 m/s²`。向下限幅在运行时还会被限制在 `FV_GRAVITY` 以内，避免生成超过
+自由落体能力的指令。最终加速度指令以 `FV_JERK_MAX` 限制每周期变化量，默认为
+`15 m/s³`。这些参数均可通过地面站在线调整。
+
 最终 `a_sp` 保存到 `_pos_acc_cmd`，供执行器分配使用。
 
 ## 8. 姿态与角速度串级 PID
@@ -680,6 +686,10 @@ RC 请求切回 PX4 原生控制器时，只发布四路倾转舵机中位命令
 
 ### 13.2 飞行器和执行器模型
 
+- `FV_ACC_HOR_MAX`：POSCTL 水平加速度上限，默认 20 m/s²；
+- `FV_ACC_UP_MAX`：POSCTL 向上加速度上限，默认 20 m/s²；
+- `FV_ACC_DOWN_MAX`：POSCTL 向下加速度上限，默认 8 m/s²，运行时不超过 `FV_GRAVITY`；
+- `FV_JERK_MAX`：POSCTL 水平/垂向加速度变化率上限，默认 15 m/s³；
 - `FV_MASS`、`FV_GRAVITY`：质量和重力；
 - `FV_MOTOR_DIST`：电机到机体中心距离；
 - `FV_K_F`、`FV_K_M`：推力和反扭矩系数；

@@ -220,6 +220,57 @@ parameters:
             Z 轴速度内环微分增益。
             根据垂向速度误差变化率抑制加速度指令突变。
 
+      FV_ACC_HOR_MAX:
+        type: float
+        default: 20.0
+        unit: m/s^2
+        decimal: 1
+        min: 0.0
+        max: 50.0
+        description:
+          short: POSCTL 最大水平加速度
+          long: |
+            fullvector 控制器在 POSCTL 中允许的最大水平加速度向量幅值。
+
+      FV_ACC_UP_MAX:
+        type: float
+        default: 20.0
+        unit: m/s^2
+        decimal: 1
+        min: 0.0
+        max: 50.0
+        description:
+          short: POSCTL 最大向上加速度
+          long: |
+            fullvector 控制器在 POSCTL 中允许的最大向上加速度。
+            NED Z 轴向下为正，该参数限制负向的垂向加速度。
+
+      FV_ACC_DOWN_MAX:
+        type: float
+        default: 8.0
+        unit: m/s^2
+        decimal: 1
+        min: 0.0
+        max: 9.8
+        description:
+          short: POSCTL 最大向下加速度
+          long: |
+            fullvector 控制器在 POSCTL 中允许的最大向下加速度。
+            NED Z 轴向下为正，该值必须低于重力加速度；运行时还会受 FV_GRAVITY 限制。
+
+      FV_JERK_MAX:
+        type: float
+        default: 15.0
+        unit: m/s^3
+        decimal: 1
+        min: 0.0
+        max: 200.0
+        description:
+          short: POSCTL 最大加速度变化率
+          long: |
+            fullvector 控制器在 POSCTL 中允许的最大加速度变化率。
+            同时用于限制水平加速度向量和 NED 垂向加速度的每周期变化量。
+
       FV_ATT_P_X:
         type: float
         default: 6.5
