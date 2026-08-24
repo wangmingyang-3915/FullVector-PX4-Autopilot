@@ -62,6 +62,7 @@
 #include <uORB/topics/vehicle_angular_velocity.h>
 #include <uORB/topics/vehicle_control_mode.h>
 #include <uORB/topics/parameter_update.h>
+#include <uORB/topics/sensor_selection.h>
 #include <uORB/topics/vehicle_local_position_setpoint.h>
 #include <uORB/topics/vehicle_angular_acceleration_setpoint.h>
 #include <uORB/topics/fullvector_control_status.h>
@@ -212,6 +213,10 @@ private:
 		(ParamFloat<px4::params::FV_VEL_D_X>)             _param_fv_vel_d_x,
 		(ParamFloat<px4::params::FV_VEL_D_Y>)             _param_fv_vel_d_y,
 		(ParamFloat<px4::params::FV_VEL_D_Z>)             _param_fv_vel_d_z,
+		(ParamFloat<px4::params::FV_ACC_HOR_MAX>)         _param_fv_acc_hor_max,
+		(ParamFloat<px4::params::FV_ACC_UP_MAX>)          _param_fv_acc_up_max,
+		(ParamFloat<px4::params::FV_ACC_DOWN_MAX>)        _param_fv_acc_down_max,
+		(ParamFloat<px4::params::FV_JERK_MAX>)            _param_fv_jerk_max,
 		(ParamFloat<px4::params::FV_ATT_P_X>)             _param_fv_att_p_x,
 		(ParamFloat<px4::params::FV_ATT_P_Y>)             _param_fv_att_p_y,
 		(ParamFloat<px4::params::FV_ATT_P_Z>)             _param_fv_att_p_z,
@@ -262,6 +267,7 @@ private:
 	uORB::Subscription _vehicle_angular_velocity_sub{ORB_ID(vehicle_angular_velocity)};
 	uORB::Subscription _vehicle_control_mode_sub{ORB_ID(vehicle_control_mode)};
 	uORB::Subscription _vehicle_status_sub{ORB_ID(vehicle_status)};
+	uORB::Subscription _sensor_selection_sub{ORB_ID(sensor_selection)};
 	uORB::Subscription _trajectory_setpoint_sub{ORB_ID(trajectory_setpoint)};
 	// 本机相对目标机的 6DoF 位姿，父坐标系为目标机 body FRD。
 	uORB::Subscription _target_relative_pose_sub{ORB_ID(target_relative_pose)};
@@ -275,6 +281,7 @@ private:
 	vehicle_control_mode_s _control_mode{};
 	manual_control_setpoint_s _manual_control_setpoint{};
 	vehicle_status_s _vehicle_status{};
+	sensor_selection_s _sensor_selection{};
 	trajectory_setpoint_s _trajectory_setpoint{};
 	target_relative_pose_s _target_relative_pose{};
 	bool _target_relative_pose_valid{false};
@@ -327,6 +334,13 @@ private:
 
 	bool _controller_was_active{false};
 	bool _command_initialized{false};
+	// 飞行模式切换与执行器饱和保护。
+	uint8_t _last_control_nav_state{vehicle_status_s::NAVIGATION_STATE_MAX};
+	Vector3f _posctl_acceleration_previous{};
+	bool _posctl_acceleration_previous_valid{false};
+	bool _actuator_saturated{false};
+	uint32_t _selected_accel_device_id{0};
+	uint32_t _selected_gyro_device_id{0};
 	// POSCTL 航向目标。
 	float _posctl_yaw_sp{0.0f};
 	bool _posctl_yaw_sp_initialized{false};
