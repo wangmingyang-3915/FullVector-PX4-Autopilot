@@ -237,6 +237,49 @@ void FullvectorControl::publishFullvectorControlStatus(bool fullvector_active, b
 	_fullvector_control_status_pub.publish(status);
 }
 
+// 发布旁路控制诊断快照；该消息不参与控制、仲裁或执行器输出。
+void FullvectorControl::publishFullvectorControlDiagnostics(uint8_t output_state, uint8_t fallback_reason)
+{
+	fullvector_control_diagnostics_s diagnostics{};
+	const hrt_abstime now = hrt_absolute_time();
+	const auto sample_age = [now](hrt_abstime timestamp) {
+		return ((timestamp > 0) && (timestamp <= now)) ? now - timestamp : UINT64_MAX;
+	};
+
+	diagnostics.timestamp_sample = now;
+	diagnostics.timestamp = now;
+	diagnostics.output_state = output_state;
+	diagnostics.fallback_reason = fallback_reason;
+	diagnostics.control_setpoint_valid = _diagnostic_control_setpoint_valid;
+	diagnostics.position_control_active = _diagnostic_position_control_active;
+	diagnostics.state_age_level = _state_age_level;
+	diagnostics.position_state_age_level = _position_state_age_level;
+	diagnostics.attitude_state_age_level = _attitude_state_age_level;
+	diagnostics.position_age = sample_age(_last_position_update);
+	diagnostics.velocity_age = sample_age(_last_velocity_update);
+	diagnostics.attitude_age = sample_age(_last_attitude_update);
+	diagnostics.angular_velocity_age = sample_age(_last_angular_velocity_update);
+	diagnostics.acceleration_limited = _diagnostic_acceleration_limited;
+	diagnostics.jerk_limited = _diagnostic_jerk_limited;
+	diagnostics.attitude_error_source = _diagnostic_attitude_error_source;
+	diagnostics.actuator_saturated = _actuator_saturated;
+	diagnostics.motor_upper_saturation_mask = _diagnostic_motor_upper_saturation_mask;
+	diagnostics.motor_lower_saturation_mask = _diagnostic_motor_lower_saturation_mask;
+	diagnostics.servo_saturation_mask = _diagnostic_servo_saturation_mask;
+
+	for (int i = 0; i < 3; i++) {
+		diagnostics.acceleration_sp_raw[i] = _diagnostic_acceleration_sp_raw(i);
+		diagnostics.acceleration_sp_limited[i] = _diagnostic_acceleration_sp_limited(i);
+		diagnostics.acceleration_sp_final[i] = _diagnostic_acceleration_sp_final(i);
+		diagnostics.attitude_sp[i] = _diagnostic_attitude_sp(i);
+		diagnostics.attitude_error[i] = _diagnostic_attitude_error(i);
+		diagnostics.angular_velocity_sp[i] = _diagnostic_angular_velocity_sp(i);
+		diagnostics.angular_velocity_error[i] = _diagnostic_angular_velocity_error(i);
+	}
+
+	_fullvector_control_diagnostics_pub.publish(diagnostics);
+}
+
 // 按固定频率输出控制与对接摘要。
 void FullvectorControl::printControlDebug(hrt_abstime now)
 {
@@ -678,6 +721,15 @@ void FullvectorControl::Run()
 	parameters_update(false);
 	const hrt_abstime now = hrt_absolute_time();
 
+	// 每周期重新建立旁路诊断快照，不改变任何控制状态。
+	_diagnostic_control_setpoint_valid = false;
+	_diagnostic_position_control_active = false;
+	_diagnostic_acceleration_limited = false;
+	_diagnostic_jerk_limited = false;
+	_diagnostic_motor_upper_saturation_mask = 0;
+	_diagnostic_motor_lower_saturation_mask = 0;
+	_diagnostic_servo_saturation_mask = 0;
+
 	// 更新飞行模式与轨迹目标。
 	_vehicle_control_mode_sub.update(&_control_mode);
 	_vehicle_status_sub.update(&_vehicle_status);
@@ -802,6 +854,11 @@ void FullvectorControl::Run()
 		_command_initialized = false;
 		_last_actuator_output_valid = false;
 		publishFullvectorControlStatus(false, native_requested, rc_switch_valid, rc_switch_value);
+		const uint8_t fallback_reason = !fv_enabled ?
+						fullvector_control_diagnostics_s::FALLBACK_REASON_DISABLED :
+						(!armed ? fullvector_control_diagnostics_s::FALLBACK_REASON_DISARMED :
+						 fullvector_control_diagnostics_s::FALLBACK_REASON_TERMINATION);
+		publishFullvectorControlDiagnostics(fullvector_control_diagnostics_s::OUTPUT_STATE_NONE, fallback_reason);
 		return;
 	}
 
@@ -816,6 +873,8 @@ void FullvectorControl::Run()
 		_command_initialized = false;
 		_last_actuator_output_valid = false;
 		publishFullvectorControlStatus(false, native_requested, rc_switch_valid, rc_switch_value);
+		publishFullvectorControlDiagnostics(fullvector_control_diagnostics_s::OUTPUT_STATE_NONE,
+				fullvector_control_diagnostics_s::FALLBACK_REASON_UNSUPPORTED_MODE);
 		return;
 	}
 
@@ -831,6 +890,8 @@ void FullvectorControl::Run()
 		_command_initialized = false;
 		_last_actuator_output_valid = false;
 		publishFullvectorControlStatus(false, true, rc_switch_valid, rc_switch_value);
+		publishFullvectorControlDiagnostics(fullvector_control_diagnostics_s::OUTPUT_STATE_NEUTRAL_TILT,
+				fullvector_control_diagnostics_s::FALLBACK_REASON_NATIVE_REQUEST);
 		return;
 	}
 
@@ -859,6 +920,8 @@ void FullvectorControl::Run()
 	_last_run_time = now;
 
 	if (!PX4_ISFINITE(_dt) || (_dt <= FLT_EPSILON)) {
+		publishFullvectorControlDiagnostics(fullvector_control_diagnostics_s::OUTPUT_STATE_NONE,
+				fullvector_control_diagnostics_s::FALLBACK_REASON_INVALID_DT);
 		return;
 	}
 
@@ -888,6 +951,9 @@ void FullvectorControl::Run()
 			PX4_WARN("state unavailable, publishing safe actuator fallback");
 		}
 
+		publishFullvectorControlDiagnostics(fullvector_control_diagnostics_s::OUTPUT_STATE_SAFE_FALLBACK,
+				fullvector_control_diagnostics_s::FALLBACK_REASON_STATE_UNAVAILABLE);
+
 		return;
 	}
 
@@ -902,12 +968,17 @@ void FullvectorControl::Run()
 			PX4_WARN("attitude stale-fail, publishing safe actuator fallback");
 		}
 
+		publishFullvectorControlDiagnostics(fullvector_control_diagnostics_s::OUTPUT_STATE_SAFE_FALLBACK,
+				fullvector_control_diagnostics_s::FALLBACK_REASON_ATTITUDE_STALE);
+
 		return;
 	}
 
 	// 姿态短时过期时保持上一拍输出。
 	if (_attitude_state_age_level >= 2) {
-		if (!publishLastActuatorCommand()) {
+		const bool held_last_command = publishLastActuatorCommand();
+
+		if (!held_last_command) {
 			publishSafeActuatorFallback();
 		}
 
@@ -917,6 +988,11 @@ void FullvectorControl::Run()
 		if (shouldLogFaultWarning(now)) {
 			PX4_WARN("attitude stale, holding last actuator command");
 		}
+
+		publishFullvectorControlDiagnostics(held_last_command ?
+				fullvector_control_diagnostics_s::OUTPUT_STATE_HOLD_LAST :
+				fullvector_control_diagnostics_s::OUTPUT_STATE_SAFE_FALLBACK,
+				fullvector_control_diagnostics_s::FALLBACK_REASON_ATTITUDE_STALE);
 
 		return;
 	}
@@ -1073,6 +1149,8 @@ void FullvectorControl::Run()
 			resetPidState();
 			_last_run_time = 0;
 			_command_initialized = false;
+			publishFullvectorControlDiagnostics(fullvector_control_diagnostics_s::OUTPUT_STATE_SAFE_FALLBACK,
+					fullvector_control_diagnostics_s::FALLBACK_REASON_MANUAL_THROTTLE_IDLE);
 			return;
 		}
 
@@ -1130,6 +1208,9 @@ void FullvectorControl::Run()
 
 		// 由归一化油门反算 NED 垂向加速度。
 		_pos_acc_cmd(2) = gravity * (1.0f - throttle / hover_throttle);
+		_diagnostic_acceleration_sp_raw = _pos_acc_cmd;
+		_diagnostic_acceleration_sp_limited = _pos_acc_cmd;
+		_diagnostic_acceleration_sp_final = _pos_acc_cmd;
 	}
 
 	// 限制姿态目标变化率。
@@ -1157,9 +1238,11 @@ void FullvectorControl::Run()
 
 	// 位置失效时仅保留姿态闭环。
 	const bool run_position_control = !stabilized_mode && (_position_state_age_level < 2);
+	_diagnostic_position_control_active = run_position_control;
 
 	if (run_position_control) {
 		PositionControl(state_for_control, _current_command, _dt);
+		const Vector3f acceleration_before_jerk_limit = _pos_acc_cmd;
 
 		if (posctl_mode) {
 			// 对 POSCTL 最终位置环输出限制变化率，避免轨迹更新或估计噪声直接形成执行器阶跃。
@@ -1186,9 +1269,15 @@ void FullvectorControl::Run()
 			_posctl_acceleration_previous_valid = true;
 		}
 
+		_diagnostic_acceleration_sp_final = _pos_acc_cmd;
+		_diagnostic_jerk_limited = (_pos_acc_cmd - acceleration_before_jerk_limit).norm_squared() > FLT_EPSILON;
+
 	} else if (!stabilized_mode) {
 		resetPositionPidState();
 		_pos_acc_cmd.zero();
+		_diagnostic_acceleration_sp_raw.zero();
+		_diagnostic_acceleration_sp_limited.zero();
+		_diagnostic_acceleration_sp_final.zero();
 		_posctl_acceleration_previous_valid = false;
 
 		if (shouldLogFaultWarning(now)) {
@@ -1199,6 +1288,17 @@ void FullvectorControl::Run()
 	// 姿态控制后生成并发布执行器指令。
 	AttitudeControl(state_for_control, _current_command, _dt, stabilized_mode);
 	controlAllocation(state_for_control, _current_command);
+
+	const bool attitude_only_output = !stabilized_mode && !run_position_control;
+	const uint8_t diagnostic_fallback_reason = attitude_only_output ?
+			fullvector_control_diagnostics_s::FALLBACK_REASON_POSITION_STALE :
+			(relative_pose_state == RelativePoseState::Aborted ?
+			 fullvector_control_diagnostics_s::FALLBACK_REASON_RELATIVE_POSE_ABORTED :
+			 fullvector_control_diagnostics_s::FALLBACK_REASON_NONE);
+	publishFullvectorControlDiagnostics(attitude_only_output ?
+			fullvector_control_diagnostics_s::OUTPUT_STATE_ATTITUDE_ONLY :
+			fullvector_control_diagnostics_s::OUTPUT_STATE_NORMAL,
+			diagnostic_fallback_reason);
 
 	// 执行器已经饱和时泄放积分，防止下一拍继续沿饱和方向累积。
 	if (_actuator_saturated) {
@@ -1345,6 +1445,7 @@ void FullvectorControl::PositionControl(const UAVStates &state, const UAVCommand
 	// 对接模式不叠加全局轨迹加速度前馈。
 	const Vector3f acceleration_ff = use_relative_pose ? Vector3f{} : command.acceleration;
 	Vector3f acc_cmd = acceleration_ff + vel_kp.emult(ev) + vel_ki.emult(_vel_error_int) + vel_kd.emult(dev);
+	_diagnostic_acceleration_sp_raw = acc_cmd;
 
 	if (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_POSCTL) {
 		// POSCTL 只输出飞行器能够安全实现的加速度，防止误差扩大后执行器持续顶死。
@@ -1363,6 +1464,10 @@ void FullvectorControl::PositionControl(const UAVStates &state, const UAVCommand
 		// NED Z 轴向下为正，因此向上限幅为负值、向下限幅为正值。
 		acc_cmd(2) = math::constrain(acc_cmd(2), -upward_acceleration_max, downward_acceleration_max);
 	}
+
+	_diagnostic_acceleration_sp_limited = acc_cmd;
+	_diagnostic_acceleration_sp_final = acc_cmd;
+	_diagnostic_acceleration_limited = (acc_cmd - _diagnostic_acceleration_sp_raw).norm_squared() > FLT_EPSILON;
 	// 保存执行器计算所需的加速度指令。
 	_pos_acc_cmd = acc_cmd;
 
@@ -1444,6 +1549,9 @@ void FullvectorControl::AttitudeControl(const UAVStates &state, UAVCommand &comm
 	e_att(0) = matrix::wrap_pi(e_att(0));
 	e_att(1) = matrix::wrap_pi(e_att(1));
 	e_att(2) = matrix::wrap_pi(e_att(2));
+	_diagnostic_attitude_sp = euler_sp;
+	_diagnostic_attitude_error = e_att;
+	_diagnostic_attitude_error_source = static_cast<uint8_t>(attitude_error_source);
 
 	if (attitude_error_source != _attitude_error_source) {
 		// 误差源切换时只重置姿态外环历史。
@@ -1501,9 +1609,11 @@ void FullvectorControl::AttitudeControl(const UAVStates &state, UAVCommand &comm
 
 	// 保存期望角速度，供内环和诊断使用。
 	command.angular_velocity = omega_sp;
+	_diagnostic_angular_velocity_sp = omega_sp;
 
 	// 角速度内环生成期望角加速度。
 	const Vector3f e_w = omega_sp - state.angular_velocity;
+	_diagnostic_angular_velocity_error = e_w;
 
 	// 首拍或误差源切换时同步微分历史。
 	if (initialize_angular_velocity_error) {
@@ -1564,6 +1674,7 @@ void FullvectorControl::AttitudeControl(const UAVStates &state, UAVCommand &comm
 	attitude_controller_output.xyz[1] = ang_acc_cmd(1);
 	attitude_controller_output.xyz[2] = ang_acc_cmd(2);
 	_attitude_controller_output_pub.publish(attitude_controller_output);
+	_diagnostic_control_setpoint_valid = true;
 }
 
 // 将控制器输出分配为电机转速与倾转舵机指令。
@@ -1692,10 +1803,26 @@ void FullvectorControl::calculateMotorCommand(const UAVStates &state, const UAVC
 
 	// 记录实际发布端的饱和状态，供下一控制周期执行积分保护。
 	_actuator_saturated = false;
+	_diagnostic_motor_upper_saturation_mask = 0;
+	_diagnostic_motor_lower_saturation_mask = 0;
+	_diagnostic_servo_saturation_mask = 0;
 
 	for (int i = 0; i < 4; i++) {
 		_actuator_saturated |= (motor_speed.control[i] <= 0.01f) || (motor_speed.control[i] >= 0.99f);
 		_actuator_saturated |= fabsf(motor_tilt.control[i]) >= 0.99f;
+		const uint8_t actuator_bit = static_cast<uint8_t>(1u << i);
+
+		if (motor_speed.control[i] >= 0.99f) {
+			_diagnostic_motor_upper_saturation_mask |= actuator_bit;
+		}
+
+		if (motor_speed.control[i] <= 0.01f) {
+			_diagnostic_motor_lower_saturation_mask |= actuator_bit;
+		}
+
+		if (fabsf(motor_tilt.control[i]) >= 0.99f) {
+			_diagnostic_servo_saturation_mask |= actuator_bit;
+		}
 	}
 
 	// 缓存有效输出，供短时状态掉帧时保持。

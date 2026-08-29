@@ -62,6 +62,7 @@ void LoggedTopics::add_default_topics()
 	add_optional_topic("esc_status", 250);
 	add_topic("failure_detector_status", 100);
 	add_topic("failsafe_flags");
+	add_topic("fullvector_control_diagnostics", 20);
 	add_topic("fullvector_control_status", 50);
 	add_optional_topic("follow_target", 500);
 	add_optional_topic("follow_target_estimator", 200);
@@ -225,8 +226,8 @@ void LoggedTopics::add_default_topics()
 	add_optional_topic("pps_capture");
 
 	// additional control allocation logging
-	add_topic("actuator_motors", 100);
-	add_topic("actuator_servos", 100);
+	add_topic("actuator_motors", 20);
+	add_topic("actuator_servos", 20);
 	add_topic_multi("vehicle_thrust_setpoint", 20, 2);
 	add_topic_multi("vehicle_torque_setpoint", 20, 2);
 

@@ -88,6 +88,7 @@ set(msg_files
 	FollowTarget.msg
 	FollowTargetEstimator.msg
 	FollowTargetStatus.msg
+	FullvectorControlDiagnostics.msg
 	FullvectorControlStatus.msg
 	GeneratorStatus.msg
 	GeofenceResult.msg

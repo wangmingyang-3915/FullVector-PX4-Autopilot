@@ -65,6 +65,7 @@
 #include <uORB/topics/sensor_selection.h>
 #include <uORB/topics/vehicle_local_position_setpoint.h>
 #include <uORB/topics/vehicle_angular_acceleration_setpoint.h>
+#include <uORB/topics/fullvector_control_diagnostics.h>
 #include <uORB/topics/fullvector_control_status.h>
 #include <uORB/topics/manual_control_setpoint.h>
 #include <uORB/topics/trajectory_setpoint.h>
@@ -156,6 +157,7 @@ private:
 	bool publishLastActuatorCommand();
 	void publishNeutralTiltServos();
 	void printControlDebug(hrt_abstime now);
+	void publishFullvectorControlDiagnostics(uint8_t output_state, uint8_t fallback_reason);
 	void publishFullvectorControlStatus(bool fullvector_active, bool native_requested, bool rc_switch_valid,
 					    float rc_switch_value);
 	// 对接失联回退和输入门控。
@@ -256,6 +258,8 @@ private:
 	// 前四路分别对应四个倾转舵机和四个电机。
 	uORB::Publication<actuator_servos_s> _motor_tilt_pub_raw{ORB_ID(actuator_servos)};
 	uORB::Publication<actuator_motors_s> _motor_speed_pub_raw{ORB_ID(actuator_motors)};
+	// 旁路发布控制器诊断数据，不参与任何控制或仲裁。
+	uORB::Publication<fullvector_control_diagnostics_s> _fullvector_control_diagnostics_pub{ORB_ID(fullvector_control_diagnostics)};
 	// control_allocator 根据该状态决定是否让出原生输出。
 	uORB::Publication<fullvector_control_status_s> _fullvector_control_status_pub{ORB_ID(fullvector_control_status)};
 	// 对接失联超时后请求 Commander 切回 POSCTL。
@@ -360,6 +364,23 @@ private:
 
 	Vector3f _pos_acc_cmd{};       // NED 期望加速度。
 	Vector3f _att_ang_acc_cmd{};   // 机体系期望角加速度。
+
+	// 仅用于 ULog 的旁路诊断快照，不参与控制计算。
+	bool _diagnostic_control_setpoint_valid{false};
+	bool _diagnostic_position_control_active{false};
+	Vector3f _diagnostic_acceleration_sp_raw{};
+	Vector3f _diagnostic_acceleration_sp_limited{};
+	Vector3f _diagnostic_acceleration_sp_final{};
+	bool _diagnostic_acceleration_limited{false};
+	bool _diagnostic_jerk_limited{false};
+	Vector3f _diagnostic_attitude_sp{};
+	Vector3f _diagnostic_attitude_error{};
+	Vector3f _diagnostic_angular_velocity_sp{};
+	Vector3f _diagnostic_angular_velocity_error{};
+	uint8_t _diagnostic_attitude_error_source{0};
+	uint8_t _diagnostic_motor_upper_saturation_mask{0};
+	uint8_t _diagnostic_motor_lower_saturation_mask{0};
+	uint8_t _diagnostic_servo_saturation_mask{0};
 
 	// 执行器分配结果，编号顺序为右前、左后、左前、右后。
 	float alpha_offset1{0.0f};
