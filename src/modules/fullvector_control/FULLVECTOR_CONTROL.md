@@ -259,6 +259,10 @@ R_NED,target = R(state.attitude) · R(relative_attitude)^T
 ```
 
 相对控制不叠加 `trajectory_setpoint` 的速度和加速度前馈，默认目标机速度和加速度为 0，防止相对误差为零时仍产生运动命令。
+对接模式生成的 NED X/Y 期望速度分别受 `FV_DOCK_VX_MAX` 和 `FV_DOCK_VY_MAX` 限制，
+默认均为 0.5 m/s。两个参数只在相对位姿 Tracking 状态生效，不改变普通位置控制和 Z 轴限幅。
+同一状态下，NED 水平期望加速度向量幅值受 `FV_DOCK_ACC_MAX` 限制，默认 1.0 m/s²；
+水平加速度向量和垂直加速度的变化率受 `FV_DOCK_JERK_MAX` 限制，默认 2.0 m/s³。
 
 相对姿态控制默认采用混合误差源：roll、pitch 使用 IMU/EKF 绝对姿态并保持水平目标，yaw 使用视觉相对
 姿态对齐 `FV_REL_YAW`。这样视觉 roll/pitch 噪声不会直接进入姿态闭环。将 `FV_REL_ATT_MODE` 设为 1
@@ -272,7 +276,7 @@ R_NED,target = R(state.attitude) · R(relative_attitude)^T
 2. 清除位置和姿态外环积分，同步外环及内环微分历史；速度与角速度内环积分继续保留；
 3. 位置、速度和加速度目标分别设为捕获位置、0、0；
 4. roll、pitch 设为 0，yaw 保持丢失瞬间的航向；
-5. 继续使用普通模式共用的 PID 限幅和控制分配链路；当前实现没有额外的对接专用输出限幅。
+5. 退出 Tracking 后不再使用对接专用速度、加速度和 jerk 限幅，继续使用普通位置保持链路。
 
 离开 OFFBOARD 或 fullvector 交还控制权后，相对位姿会话、运动学门控基准和丢失保持状态被统一清除。
 
@@ -399,6 +403,10 @@ POSCTL 中，水平加速度向量幅值由 `FV_ACC_HOR_MAX` 限制，默认为 
 `20 m/s²` 和 `8 m/s²`。向下限幅在运行时还会被限制在 `FV_GRAVITY` 以内，避免生成超过
 自由落体能力的指令。最终加速度指令以 `FV_JERK_MAX` 限制每周期变化量，默认为
 `15 m/s³`。这些参数均可通过地面站在线调整。
+
+相对位姿 Tracking 对接中，水平加速度向量幅值由 `FV_DOCK_ACC_MAX` 限制，
+默认为 `1.0 m/s²`；最终水平加速度向量和垂直加速度的变化率由 `FV_DOCK_JERK_MAX`
+限制，默认为 `2.0 m/s³`。两者都可通过地面站在线调整。
 
 最终 `a_sp` 保存到 `_pos_acc_cmd`，供执行器分配使用。
 
@@ -703,6 +711,9 @@ RC 请求切回 PX4 原生控制器时，只发布四路倾转舵机中位命令
 ### 13.3 相对位姿控制
 
 - `FV_REL_POS_X/Y/Z`：期望相对位置；
+- `FV_DOCK_VX_MAX`、`FV_DOCK_VY_MAX`：对接 Tracking 状态下的 NED X/Y 期望速度上限，默认 0.5 m/s；
+- `FV_DOCK_ACC_MAX`：对接 Tracking 状态下的 NED 水平加速度向量上限，默认 1.0 m/s²；
+- `FV_DOCK_JERK_MAX`：对接 Tracking 状态下的水平/垂直加速度变化率上限，默认 2.0 m/s³；
 - `FV_REL_ATT_MODE`：相对姿态误差源，默认 0 表示 IMU roll/pitch 加视觉相对 yaw；
 - `FV_REL_ROLL/PITCH/YAW`：期望相对姿态，其中 roll/pitch 仅在模式 1 生效；
 - `FV_REL_LOSS_T`：相对位姿超时时间，默认 0.25 s；

@@ -748,6 +748,58 @@ parameters:
           long: |
             本机机体中心在目标机 body FRD 中的期望 Z 位置，正方向为目标机下方。
 
+      FV_DOCK_VX_MAX:
+        type: float
+        default: 0.5
+        unit: m/s
+        decimal: 2
+        min: 0.0
+        max: 5.0
+        description:
+          short: 对接模式 NED X 速度上限
+          long: |
+            相对位姿对接激活时，限制 NED X 方向期望速度的绝对值。
+            该参数不影响 POSCTL、非对接 OFFBOARD 或垂直速度。
+
+      FV_DOCK_VY_MAX:
+        type: float
+        default: 0.5
+        unit: m/s
+        decimal: 2
+        min: 0.0
+        max: 5.0
+        description:
+          short: 对接模式 NED Y 速度上限
+          long: |
+            相对位姿对接激活时，限制 NED Y 方向期望速度的绝对值。
+            该参数不影响 POSCTL、非对接 OFFBOARD 或垂直速度。
+
+      FV_DOCK_ACC_MAX:
+        type: float
+        default: 1.0
+        unit: m/s^2
+        decimal: 1
+        min: 0.0
+        max: 10.0
+        description:
+          short: 对接模式最大水平加速度
+          long: |
+            相对位姿对接激活时，限制 NED 水平期望加速度向量的幅值。
+            该参数不影响 POSCTL、非对接 OFFBOARD 或垂直加速度。
+
+      FV_DOCK_JERK_MAX:
+        type: float
+        default: 2.0
+        unit: m/s^3
+        decimal: 1
+        min: 0.0
+        max: 50.0
+        description:
+          short: 对接模式最大加速度变化率
+          long: |
+            相对位姿对接激活时，限制水平加速度向量和 NED 垂直加速度的每周期变化量。
+            该参数不影响 POSCTL 或非对接 OFFBOARD。
+
       FV_REL_LOSS_T:
         type: float
         default: 0.25

@@ -130,6 +130,8 @@ void FullvectorControl::resetRelativePoseSession()
 {
 	_relative_pose_state_machine.reset();
 	_relative_pose_active = false;
+	_dock_acceleration_previous.zero();
+	_dock_acceleration_previous_valid = false;
 	_relative_pose_hold_initialized = false;
 	_relative_pose_hold_position.zero();
 	_relative_pose_hold_yaw = 0.0f;
@@ -821,6 +823,12 @@ void FullvectorControl::Run()
 		_relative_pose_active = relative_pose_state == RelativePoseState::Tracking;
 		_relative_pose_loss_duration = _relative_pose_state_machine.lossDuration(now);
 
+		// 进入对接 Tracking 时从上一拍加速度开始限制 jerk，避免指令阶跃。
+		if (_relative_pose_active && (previous_relative_pose_state != RelativePoseState::Tracking)) {
+			_dock_acceleration_previous = _pos_acc_cmd;
+			_dock_acceleration_previous_valid = true;
+		}
+
 		// 首次进入保持态时重新捕获保持目标。
 		if ((relative_pose_state == RelativePoseState::LossHold)
 		    && (previous_relative_pose_state != RelativePoseState::LossHold)) {
@@ -1244,13 +1252,19 @@ void FullvectorControl::Run()
 		PositionControl(state_for_control, _current_command, _dt);
 		const Vector3f acceleration_before_jerk_limit = _pos_acc_cmd;
 
-		if (posctl_mode) {
-			// 对 POSCTL 最终位置环输出限制变化率，避免轨迹更新或估计噪声直接形成执行器阶跃。
-			const float jerk_max = math::max(_param_fv_jerk_max.get(), 0.0f); // m/s^3
+		if (posctl_mode || _relative_pose_active) {
+			// POSCTL 和对接分别使用自己的 jerk 参数与历史，避免跨模式污染。
+			const bool docking = _relative_pose_active;
+			const float jerk_max = docking ? math::max(_param_fv_dock_jerk_max.get(), 0.0f) :
+					       math::max(_param_fv_jerk_max.get(), 0.0f); // m/s^3
+			Vector3f &acceleration_previous = docking ? _dock_acceleration_previous :
+							       _posctl_acceleration_previous;
+			bool &acceleration_previous_valid = docking ? _dock_acceleration_previous_valid :
+								    _posctl_acceleration_previous_valid;
 
-			if (_posctl_acceleration_previous_valid) {
-				Vector2f horizontal_delta(_pos_acc_cmd(0) - _posctl_acceleration_previous(0),
-							  _pos_acc_cmd(1) - _posctl_acceleration_previous(1));
+			if (acceleration_previous_valid) {
+				Vector2f horizontal_delta(_pos_acc_cmd(0) - acceleration_previous(0),
+							  _pos_acc_cmd(1) - acceleration_previous(1));
 				const float acceleration_step_max = jerk_max * _dt;
 				const float horizontal_delta_norm = horizontal_delta.norm();
 
@@ -1258,15 +1272,27 @@ void FullvectorControl::Run()
 					horizontal_delta *= acceleration_step_max / horizontal_delta_norm;
 				}
 
-				_pos_acc_cmd(0) = _posctl_acceleration_previous(0) + horizontal_delta(0);
-				_pos_acc_cmd(1) = _posctl_acceleration_previous(1) + horizontal_delta(1);
-				_pos_acc_cmd(2) = _posctl_acceleration_previous(2) + math::constrain(
-							  _pos_acc_cmd(2) - _posctl_acceleration_previous(2),
+				_pos_acc_cmd(0) = acceleration_previous(0) + horizontal_delta(0);
+				_pos_acc_cmd(1) = acceleration_previous(1) + horizontal_delta(1);
+				_pos_acc_cmd(2) = acceleration_previous(2) + math::constrain(
+							  _pos_acc_cmd(2) - acceleration_previous(2),
 							  -acceleration_step_max, acceleration_step_max);
 			}
 
-			_posctl_acceleration_previous = _pos_acc_cmd;
-			_posctl_acceleration_previous_valid = true;
+			// 对接安全性优先于过渡平滑性；即使上一拍超限，最终指令也不超过加速度上限。
+			if (docking) {
+				const float horizontal_acceleration_max = math::max(_param_fv_dock_acc_max.get(), 0.0f);
+				const float horizontal_acceleration = Vector2f(_pos_acc_cmd(0), _pos_acc_cmd(1)).norm();
+
+				if (horizontal_acceleration > horizontal_acceleration_max) {
+					const float scale = horizontal_acceleration_max / horizontal_acceleration;
+					_pos_acc_cmd(0) *= scale;
+					_pos_acc_cmd(1) *= scale;
+				}
+			}
+
+			acceleration_previous = _pos_acc_cmd;
+			acceleration_previous_valid = true;
 		}
 
 		_diagnostic_acceleration_sp_final = _pos_acc_cmd;
@@ -1279,6 +1305,8 @@ void FullvectorControl::Run()
 		_diagnostic_acceleration_sp_limited.zero();
 		_diagnostic_acceleration_sp_final.zero();
 		_posctl_acceleration_previous_valid = false;
+		_dock_acceleration_previous.zero();
+		_dock_acceleration_previous_valid = _relative_pose_active;
 
 		if (shouldLogFaultWarning(now)) {
 			PX4_WARN("position stale, skipping position control");
@@ -1414,10 +1442,13 @@ void FullvectorControl::PositionControl(const UAVStates &state, const UAVCommand
 	const Vector3f velocity_ff = use_relative_pose ? Vector3f{} : command.velocity;
 	Vector3f v_sp = velocity_ff + pos_kp.emult(ep) + pos_ki.emult(_pos_error_int) + pos_kd.emult(dep);
 
-	// 叠加速度前馈并统一限幅。
-	for (int i = 0; i < 3; i++) {
-		v_sp(i) = math::constrain(v_sp(i), -5.0f, 5.0f);
-	}
+	// 对接模式分别限制 NED X/Y 速度，便于根据场地和对接方向独立调试。
+	// 非对接模式与垂直方向保留原有限幅。
+	const float velocity_limit_x = use_relative_pose ? math::max(_param_fv_dock_vx_max.get(), 0.0f) : 5.0f;
+	const float velocity_limit_y = use_relative_pose ? math::max(_param_fv_dock_vy_max.get(), 0.0f) : 5.0f;
+	v_sp(0) = math::constrain(v_sp(0), -velocity_limit_x, velocity_limit_x);
+	v_sp(1) = math::constrain(v_sp(1), -velocity_limit_y, velocity_limit_y);
+	v_sp(2) = math::constrain(v_sp(2), -5.0f, 5.0f);
 
 	// 速度内环生成期望加速度。
 	const Vector3f ev = v_sp - state.velocity;
@@ -1463,6 +1494,17 @@ void FullvectorControl::PositionControl(const UAVStates &state, const UAVCommand
 
 		// NED Z 轴向下为正，因此向上限幅为负值、向下限幅为正值。
 		acc_cmd(2) = math::constrain(acc_cmd(2), -upward_acceleration_max, downward_acceleration_max);
+
+	} else if (use_relative_pose) {
+		// 对接阶段只限制水平加速度向量，垂直环保留原有控制权限。
+		const float horizontal_acceleration_max = math::max(_param_fv_dock_acc_max.get(), 0.0f); // m/s^2
+		const float horizontal_acceleration = Vector2f(acc_cmd(0), acc_cmd(1)).norm();
+
+		if (horizontal_acceleration > horizontal_acceleration_max) {
+			const float scale = horizontal_acceleration_max / horizontal_acceleration;
+			acc_cmd(0) *= scale;
+			acc_cmd(1) *= scale;
+		}
 	}
 
 	_diagnostic_acceleration_sp_limited = acc_cmd;
@@ -1909,10 +1951,10 @@ void FullvectorControl::controlAllocation(const UAVStates &state, const UAVComma
 			     - K_F * m2_sq * arm_d * cosf(alpha_offset2)
 			     + K_F * m3_sq * arm_d * cosf(alpha_offset3)
 			     - K_F * m4_sq * arm_d * cosf(alpha_offset4) + Qy;
-	const float tau_z = -K_F * m1_sq * distance * sinf(alpha_offset1)
-			    - K_F * m2_sq * distance * sinf(alpha_offset2)
-			    - K_F * m3_sq * distance * sinf(alpha_offset3)
-			    - K_F * m4_sq * distance * sinf(alpha_offset4) + Qz;
+	const float tau_z = + K_F * m1_sq * distance * sinf(alpha_offset1)
+			    + K_F * m2_sq * distance * sinf(alpha_offset2)
+			    + K_F * m3_sq * distance * sinf(alpha_offset3)
+			    + K_F * m4_sq * distance * sinf(alpha_offset4) + Qz;
 
 	// 由刚体动力学估算机体系角加速度。
 	const float p = state.angular_velocity(0);

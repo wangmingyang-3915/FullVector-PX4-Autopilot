@@ -185,6 +185,10 @@ private:
 		(ParamFloat<px4::params::FV_REL_POS_X>) _param_fv_rel_pos_x,
 		(ParamFloat<px4::params::FV_REL_POS_Y>) _param_fv_rel_pos_y,
 		(ParamFloat<px4::params::FV_REL_POS_Z>) _param_fv_rel_pos_z,
+		(ParamFloat<px4::params::FV_DOCK_VX_MAX>) _param_fv_dock_vx_max,
+		(ParamFloat<px4::params::FV_DOCK_VY_MAX>) _param_fv_dock_vy_max,
+		(ParamFloat<px4::params::FV_DOCK_ACC_MAX>) _param_fv_dock_acc_max,
+		(ParamFloat<px4::params::FV_DOCK_JERK_MAX>) _param_fv_dock_jerk_max,
 		(ParamFloat<px4::params::FV_REL_LOSS_T>) _param_fv_rel_loss_t,
 		(ParamFloat<px4::params::FV_REL_DBNC_T>) _param_fv_rel_debounce_t,
 		// 相对位姿最长保持和异常值门控。
@@ -342,6 +346,8 @@ private:
 	uint8_t _last_control_nav_state{vehicle_status_s::NAVIGATION_STATE_MAX};
 	Vector3f _posctl_acceleration_previous{};
 	bool _posctl_acceleration_previous_valid{false};
+	Vector3f _dock_acceleration_previous{};
+	bool _dock_acceleration_previous_valid{false};
 	bool _actuator_saturated{false};
 	uint32_t _selected_accel_device_id{0};
 	uint32_t _selected_gyro_device_id{0};
