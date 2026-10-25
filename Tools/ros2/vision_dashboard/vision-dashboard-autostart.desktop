@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=视觉链路监控后台
+Comment=登录 Jetson 桌面时启动本地视觉监控服务
+Exec=/home/jetson/yahboom_ws/vision_dashboard/launch.sh --background
+Icon=video-display
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true

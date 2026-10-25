@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=视觉链路监控
+Comment=查看机载相机、AprilTag、TF、相对位姿和 PX4 状态
+Exec=/home/jetson/yahboom_ws/vision_dashboard/launch.sh
+Icon=video-display
+Terminal=false
+Categories=System;

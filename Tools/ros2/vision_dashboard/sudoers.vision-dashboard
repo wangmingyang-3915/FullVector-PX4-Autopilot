@@ -1,0 +1,2 @@
+# Allow the local Jetson dashboard to restart only its AprilTag vision service.
+jetson ALL=(root) NOPASSWD: /usr/bin/systemctl restart apriltag-stack.service

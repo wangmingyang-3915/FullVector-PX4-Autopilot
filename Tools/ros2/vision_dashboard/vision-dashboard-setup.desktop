@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=启用视觉重启按钮（一次性）
+Comment=通过图形授权只允许重启 apriltag-stack.service
+Exec=/home/jetson/yahboom_ws/vision_dashboard/setup-permission.sh
+Icon=dialog-password
+Terminal=false
+Categories=System;

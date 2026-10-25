@@ -7,6 +7,7 @@
         "C_Cpp.default.browse.limitSymbolsToIncludedHeaders": true,
         "C_Cpp.default.cppStandard": "c++14",
         "C_Cpp.default.cStandard": "c11",
+        "C_Cpp.errorSquiggles": "disabled",
         "C_Cpp.formatting": "Disabled",
         "C_Cpp.intelliSenseEngine": "Default",
         "C_Cpp.vcpkg.enabled": false,
@@ -21,6 +22,7 @@
         "cmakeExplorer.suiteDelimiter": "-",
         "cSpell.allowCompoundWords": true,
         "cSpell.diagnosticLevel": "Hint",
+        "cSpell.enabled": false,
         "cSpell.showStatus": false,
         "cSpell.words": [
                 "acro",
@@ -33,6 +35,7 @@
         "editor.minimap.maxColumn": 120,
         "editor.minimap.renderCharacters": false,
         "editor.minimap.showSlider": "always",
+        "editor.renderValidationDecorations": "off",
         "editor.suggest.localityBonus": true,
         "editor.tabSize": 8,
         "editor.wordWrapColumn": 120,

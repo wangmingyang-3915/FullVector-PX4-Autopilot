@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>机载视觉链路监控</title>
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brandmark" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
+        <div>
+          <p class="eyebrow">ONBOARD VISION · ROS 2 DOMAIN 99</p>
+          <h1>视觉链路监控</h1>
+        </div>
+      </div>
+      <div class="header-actions">
+        <span id="liveState" class="live-tag">正在连接…</span>
+        <span id="updatedAt" class="updated-at">—</span>
+        <button id="restartButton" class="restart-button" type="button" disabled>重启视觉链路</button>
+      </div>
+    </header>
+
+    <main>
+      <section class="intro">
+        <div>
+          <p class="section-kicker">实时状态</p>
+          <h2>从相机到飞控，一眼看清每个环节。</h2>
+          <p>数据来自机载电脑的实时 ROS 2 话题；灰色表示还没有数据，黄色表示等待目标或连接，红色表示链路异常。</p>
+        </div>
+        <div class="intro-meta">
+          <div><span>视觉服务</span><strong id="serviceUptime">—</strong></div>
+          <div><span>Jetson 温度</span><strong id="temperature">—</strong></div>
+        </div>
+      </section>
+
+      <section class="pipeline" aria-label="视觉链路概览">
+        <div class="stage" id="stageService"><span class="stage-number">01</span><span class="stage-name">自启动服务</span><strong>—</strong><small>systemd</small></div>
+        <div class="stage" id="stageCamera"><span class="stage-number">02</span><span class="stage-name">相机</span><strong>—</strong><small>/image_raw</small></div>
+        <div class="stage" id="stageTag"><span class="stage-number">03</span><span class="stage-name">AprilTag</span><strong>—</strong><small>/detections</small></div>
+        <div class="stage" id="stageTf"><span class="stage-number">04</span><span class="stage-name">TF 坐标链</span><strong>—</strong><small>body ↔ target</small></div>
+        <div class="stage" id="stagePose"><span class="stage-number">05</span><span class="stage-name">相对位姿</span><strong>—</strong><small>60 Hz bridge</small></div>
+        <div class="stage" id="stagePx4"><span class="stage-number">06</span><span class="stage-name">Agent / PX4</span><strong>—</strong><small>UDP 8888</small></div>
+      </section>
+
+      <div class="main-grid">
+        <section class="card camera-card">
+          <div class="card-heading"><div><p class="section-kicker">CAMERA FEED</p><h2>相机实时画面</h2></div><span id="imageRate" class="metric-pill">— Hz</span></div>
+          <div class="preview-wrap">
+            <canvas id="previewCanvas" width="640" height="512" role="img" aria-label="相机实时预览"></canvas>
+            <span id="previewPlaceholder" class="preview-placeholder">等待相机图像…</span>
+            <div class="preview-corner">MONO8 · APRILTAG</div>
+          </div>
+          <div class="camera-footer">
+            <div><span>原始分辨率</span><strong id="imageSize">—</strong></div>
+            <div><span>图像时间戳</span><strong id="imageAge">—</strong></div>
+            <div><span>内参 fx / fy</span><strong id="cameraFocal">—</strong></div>
+          </div>
+        </section>
+
+        <div class="side-stack">
+          <section class="card detection-card">
+            <div class="card-heading"><div><p class="section-kicker">DETECTOR</p><h2>AprilTag 检测</h2></div><span id="detectionRate" class="metric-pill">— Hz</span></div>
+            <div class="detection-hero"><strong id="detectionCount">—</strong><span>当前画面中的标签</span></div>
+            <div id="detectionList" class="detection-list"><p class="muted">等待检测数据…</p></div>
+          </section>
+
+          <section class="card pose-card">
+            <div class="card-heading"><div><p class="section-kicker">RELATIVE POSE</p><h2>目标机体 → 本机机体</h2></div><span id="poseValidity" class="status-chip neutral">等待数据</span></div>
+            <div class="pose-topline"><span>目标 ID <strong id="poseTarget">—</strong></span><span id="poseRate">— Hz</span><span id="poseAge">—</span></div>
+            <div class="vector-grid">
+              <div><span>X · 前</span><strong id="poseX">—</strong><em>m</em></div>
+              <div><span>Y · 右</span><strong id="poseY">—</strong><em>m</em></div>
+              <div><span>Z · 下</span><strong id="poseZ">—</strong><em>m</em></div>
+            </div>
+            <div class="quaternion-row"><span>四元数 wxyz</span><code id="poseQuaternion">—</code></div>
+            <p class="helper">位置以目标机体 FRD 为参考；无标签时无效标志会变为 false。</p>
+          </section>
+        </div>
+      </div>
+
+      <div class="lower-grid">
+        <section class="card tf-card">
+          <div class="card-heading"><div><p class="section-kicker">TRANSFORMS</p><h2>3 条 TF 边 + 端到端查询</h2></div><span id="tfTarget" class="metric-pill">目标 —</span></div>
+          <div class="table-scroll"><table><thead><tr><th>变换</th><th>状态</th><th>样本年龄</th><th>平移 XYZ · m</th></tr></thead><tbody id="tfRows"><tr><td colspan="4" class="muted">等待 TF 数据…</td></tr></tbody></table></div>
+        </section>
+
+        <section class="card px4-card">
+          <div class="card-heading"><div><p class="section-kicker">FLIGHT CONTROLLER</p><h2>Agent 与 PX4</h2></div><span id="px4Freshness" class="status-chip neutral">等待回传</span></div>
+          <div class="info-list">
+            <div><span>XRCE Agent</span><strong id="agentState">—</strong></div>
+            <div><span>PX4 回传年龄</span><strong id="px4Age">—</strong></div>
+            <div><span>飞控状态</span><strong id="px4Arming">—</strong></div>
+            <div><span>飞行模式</span><strong id="px4Mode">—</strong></div>
+            <div><span>失效保护 / 地面站</span><strong id="px4Flags">—</strong></div>
+            <div><span>Offboard 心跳</span><strong id="heartbeatState">—</strong></div>
+          </div>
+        </section>
+      </div>
+
+      <section class="card operation-card">
+        <div class="card-heading"><div><p class="section-kicker">OPERATIONS</p><h2>重启与诊断</h2></div><span id="restartState" class="status-chip neutral">待命</span></div>
+        <p id="restartHint" class="operation-hint">重启前自动检查飞控状态。已解锁时会拒绝操作。</p>
+        <pre id="restartOutput" class="console-output">尚未从此页面执行重启。</pre>
+        <div class="log-heading"><h3>视觉服务近期日志</h3><span>自动刷新</span></div>
+        <pre id="serviceLogs" class="console-output logs">正在读取日志…</pre>
+      </section>
+
+      <details id="rawDetails" class="raw-details"><summary>查看当前原始数据</summary><pre id="rawData">展开后读取当前数据。</pre></details>
+    </main>
+    <footer>仅在机载电脑 127.0.0.1 提供访问 · 原始图像持续订阅 · 状态每 2 秒刷新 · 预览约 1 Hz</footer>
+  </div>
+</body>
+</html>

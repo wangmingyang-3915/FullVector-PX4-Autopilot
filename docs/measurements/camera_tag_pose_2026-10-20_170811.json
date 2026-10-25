@@ -1,0 +1,55 @@
+{
+  "recorded_at": "2026-10-20T17:08:11.074835+08:00",
+  "transform": "T_camera_link_tag0",
+  "meaning": "Pose of tag0 in camera_link optical coordinates; rotation maps tag0 coordinates into camera_link",
+  "position_unit": "m",
+  "axes": {
+    "x": "right",
+    "y": "down",
+    "z": "forward"
+  },
+  "samples": 184,
+  "duration_s": 7.959095239639282,
+  "position_mean": [
+    0.0037716152874239578,
+    -0.0721519228465803,
+    0.2288785469349055
+  ],
+  "q_mean_wxyz": [
+    -0.02053387015728488,
+    0.709676342669848,
+    0.7040024924390919,
+    0.017842070245873615
+  ],
+  "rpy_zyx_deg": [
+    -179.76915410590834,
+    -3.1090183482162943,
+    89.53382048038388
+  ],
+  "position_peak_to_peak_m": [
+    0.00017654252428227907,
+    0.00011572871588387545,
+    0.00036683868922629537
+  ],
+  "max_orientation_deviation_from_mean_deg": 0.12596498167766196,
+  "last_sample": {
+    "received_unix": 1792487291.0748353,
+    "timestamp_sample_ns": 1792487291176435007,
+    "age_ms": -101.58807,
+    "target_id": 0,
+    "reference_frame": "camera_link",
+    "child_frame": "tag0",
+    "position": [
+      0.003840071470380726,
+      -0.07213794639620827,
+      0.2290041462894543
+    ],
+    "q_wxyz": [
+      -0.020609892887852664,
+      0.7094824544238432,
+      0.7042113050730945,
+      0.017213860320089747
+    ]
+  },
+  "timestamp_note": "Raw TF measurement; source timestamps are approximately 0.1 s ahead of Jetson receipt time. This is a geometric record, not a validated PX4 control input."
+}

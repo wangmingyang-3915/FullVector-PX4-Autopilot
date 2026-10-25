@@ -1,0 +1,63 @@
+{
+  "baseline": "Live aircraft TF, final 5 seconds of compensated_verification.jsonl",
+  "transform": "tag0 -> target_body_frd_0",
+  "translation_unchanged_m": [
+    0.01,
+    0.036,
+    -0.08
+  ],
+  "old_q_wxyz": [
+    0.49049949881201377,
+    -0.5097429638092568,
+    0.5107025494070698,
+    -0.48862588812018276
+  ],
+  "compensated_q_wxyz": [
+    0.49509616822697117,
+    -0.5017394686989249,
+    0.47202981642849257,
+    -0.5294574035360872
+  ],
+  "formula": "R_tag_target_final = R_tag_target_previous * R_target_body_current",
+  "scope": "tag0 only; camera, tag1 and tag2 extrinsics unchanged",
+  "deployed": true,
+  "remote_backup": "/home/jetson/yahboom_ws/start_apriltag_stack.sh.bak_installation_compensation_20261020_171439",
+  "initial_baseline": "docs/measurements/camera_tag_pose_2026-10-20_170811.json",
+  "baseline_end_unix": 1792487703.7464368,
+  "previous_q_wxyz": [
+    0.510421185237177,
+    -0.4851886875146491,
+    0.4872973155172973,
+    -0.5163365931817377
+  ],
+  "verification_before_refinement": {
+    "samples": 279,
+    "duration_s": 11.923413038253784,
+    "relative_rpy_deg": [
+      -0.18098220515502134,
+      -0.29468668994105096,
+      -3.4820533456109795
+    ],
+    "position_mean_m": [
+      -0.03133091357075942,
+      -1.2042012813087581,
+      0.4661558048125326
+    ],
+    "max_abs_tf_age_ms": 67.00778
+  },
+  "final_remote_backup": "/home/jetson/yahboom_ws/start_apriltag_stack.sh.bak_installation_compensation_20261020_171555",
+  "verification": {
+    "samples": 219,
+    "duration_s": 9.738399982452393,
+    "relative_rpy_deg": [
+      0.10436330994841529,
+      0.07382539979539461,
+      0.14902860397353337
+    ],
+    "position_mean_m": [
+      0.04768742044398029,
+      -1.2071745628803439,
+      0.4605260478760844
+    ]
+  }
+}

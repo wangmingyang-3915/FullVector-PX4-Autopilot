@@ -148,7 +148,9 @@ uint32_t version_tag_to_number(const char *tag)
 
 uint32_t px4_firmware_version(void)
 {
-	return version_tag_to_number(PX4_GIT_TAG_STR);
+	// Report a release version for LGC ground station compatibility.
+	// Keep the actual source revision in the Git version string and binary hash.
+	return version_tag_to_number("v1.17.0");
 }
 
 uint32_t version_tag_to_vendor_version_number(const char *tag)
