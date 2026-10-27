@@ -1,0 +1,63 @@
+{
+  "recorded_at": "2026-10-27T17:06:49.712637+08:00",
+  "source_topic": "/uav1/fmu/in/target_relative_pose",
+  "reference_frame": "target_body_frd",
+  "child_frame": "body_frd",
+  "axes": "FRD: X forward, Y right, Z down",
+  "quaternion_convention": "wxyz; body_frd to target_body_frd",
+  "stable_window_found": true,
+  "stability_criteria": {
+    "window_s": 5,
+    "max_position_deviation_m": 0.005,
+    "max_orientation_deviation_deg": 1
+  },
+  "window_start": "2026-10-27T17:06:44.713127+08:00",
+  "window_end": "2026-10-27T17:06:49.712637+08:00",
+  "target_id": 0,
+  "measurement": {
+    "sample_count": 301,
+    "position_m": [
+      0.06651541548610922,
+      -0.39019119303883903,
+      0.10967596058433635
+    ],
+    "q_wxyz": [
+      0.9995938769619958,
+      -0.0013449796808781382,
+      0.002113395681297918,
+      0.02838671746501576
+    ],
+    "roll_pitch_yaw_deg": [
+      -0.14718763025039233,
+      0.24645476727464705,
+      3.2530088832587896
+    ],
+    "position_std_m": [
+      0.00034313931907853026,
+      6.340801300245946e-05,
+      0.0002884043211874967
+    ],
+    "max_position_deviation_m": 0.0008472750079797076,
+    "max_orientation_deviation_deg": 0.1519897471779204
+  },
+  "latest_sample": {
+    "received_unix_s": 1793092009.7126372,
+    "timestamp": 1793092009711605,
+    "timestamp_sample": 1793092009658408,
+    "position": [
+      0.06643220782279968,
+      -0.39017581939697266,
+      0.10939598083496094
+    ],
+    "q": [
+      0.9995988011360168,
+      -0.0010972567833960056,
+      0.0017380490899085999,
+      0.028248535469174385
+    ],
+    "target_id": 0,
+    "position_valid": true,
+    "orientation_valid": true
+  },
+  "raw_samples_file": "docs/measurements/docking_relative_pose_2026-10-27_170649_samples.json"
+}

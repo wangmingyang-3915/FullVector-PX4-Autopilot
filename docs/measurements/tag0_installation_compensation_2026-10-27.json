@@ -1,0 +1,68 @@
+{
+  "baseline": "docs/measurements/docking_relative_pose_2026-10-27_170649.json",
+  "transform": "tag0 -> target_body_frd_0",
+  "translation_m": [
+    0.01,
+    0.036,
+    -0.08
+  ],
+  "old_q_wxyz": [
+    0.4950961682269712,
+    -0.5017394686989249,
+    0.4720298164284926,
+    -0.5294574035360872
+  ],
+  "new_q_wxyz": [
+    0.5082522408249879,
+    -0.4876832650038729,
+    0.48783929433782414,
+    -0.5156137271558183
+  ],
+  "formula": "R_tag_target_new = R_tag_target_old * R_target_body_baseline; p_new = R_target_body_baseline.T * p_baseline",
+  "corrected_position_m": [
+    0.043794580960058185,
+    -0.39361784247708437,
+    0.10885454843357394
+  ],
+  "parameters": {
+    "FV_REL_POS_X": 0.0438,
+    "FV_REL_POS_Y": -0.3936,
+    "FV_REL_POS_Z": 0.1089
+  },
+  "desired_rpy_rad": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "remote_backup": "/home/jetson/yahboom_ws/start_apriltag_stack.sh.bak_installation_compensation_20261027_171521",
+  "deployed_config": true,
+  "fcu_parameters_before": {
+    "FV_REL_POS_X": 0.04100000113248825,
+    "FV_REL_POS_Y": -0.41100001335144043,
+    "FV_REL_POS_Z": 0.10199999809265137,
+    "FV_REL_ROLL": 0.0,
+    "FV_REL_PITCH": 0.0,
+    "FV_REL_YAW": 0.0
+  },
+  "fcu_parameters_readback": {
+    "FV_REL_POS_X": 0.043800000101327896,
+    "FV_REL_POS_Y": -0.3935999870300293,
+    "FV_REL_POS_Z": 0.10890000313520432,
+    "FV_REL_ROLL": 0.0,
+    "FV_REL_PITCH": 0.0,
+    "FV_REL_YAW": 0.0
+  },
+  "service_restarted": true,
+  "source_parameter_file": "src/modules/fullvector_control/module.yaml",
+  "parameter_decimal_places": 4,
+  "verification": {
+    "status": "skipped_at_user_request",
+    "reason": "Aircraft is no longer in the docking reference pose. Post-restart samples have position_valid=false and orientation_valid=false; placeholder zeros do not establish successful alignment.",
+    "parameter_readback_verified": true,
+    "baseline_orientation_after_calibration_rpy_deg": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  }
+}

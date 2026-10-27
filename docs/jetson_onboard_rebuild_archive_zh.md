@@ -1,9 +1,15 @@
 # Jetson 机载电脑重装迁移归档
 
-更新日期：2026-07-27
+更新日期：2026-10-27
 适用对象：当前 Yahboom Jetson 机载视觉系统
 历史主机名：`yahboom`
 历史用户：`jetson`
+
+当前机载发布仓库为 [jetson-yahboom](https://github.com/wangmingyang-3915/jetson-yahboom)，
+部署工作区仍为 `/home/jetson/yahboom_ws`。2026-10-27 的 tag0 外参和飞控位置参数
+以[最新对接校正记录](docking_calibration_2026-10-27_zh.md)为准。下文 2026-07-27
+的基线、外参与性能数据作为历史迁移资料保留；新部署请使用当前机载仓库中的
+启动脚本和相机内参，避免用历史示例覆盖当前配置。
 
 ## 1. 文档目的和可信边界
 

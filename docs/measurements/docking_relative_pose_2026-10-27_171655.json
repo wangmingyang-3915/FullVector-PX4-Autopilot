@@ -1,0 +1,40 @@
+{
+  "recorded_at": "2026-10-27T17:16:55.317730+08:00",
+  "source_topic": "/uav1/fmu/in/target_relative_pose",
+  "reference_frame": "target_body_frd",
+  "child_frame": "body_frd",
+  "axes": "FRD: X forward, Y right, Z down",
+  "quaternion_convention": "wxyz; body_frd to target_body_frd",
+  "stable_window_found": false,
+  "stability_criteria": {
+    "window_s": 5,
+    "max_position_deviation_m": 0.005,
+    "max_orientation_deviation_deg": 1
+  },
+  "window_start": "2026-10-27T17:16:55.317730+08:00",
+  "window_end": "2026-10-27T17:16:55.317730+08:00",
+  "target_id": 0,
+  "measurement": null,
+  "latest_sample": {
+    "received_unix_s": 1793092615.3177302,
+    "timestamp": 1793092615316450,
+    "timestamp_sample": 0,
+    "position": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "q": [
+      1.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "target_id": 0,
+    "position_valid": false,
+    "orientation_valid": false
+  },
+  "raw_samples_file": "docs/measurements/docking_relative_pose_2026-10-27_171655_samples.json",
+  "status": "invalid_pose_not_a_calibration_verification",
+  "note": "No valid pose in this capture; user confirmed aircraft is no longer in docking position and requested skipping verification."
+}

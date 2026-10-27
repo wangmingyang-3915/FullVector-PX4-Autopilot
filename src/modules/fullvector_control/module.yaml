@@ -714,9 +714,9 @@ parameters:
 
       FV_REL_POS_X:
         type: float
-        default: 0.0433
+        default: 0.0438
         unit: m
-        decimal: 6
+        decimal: 4
         min: -20.0
         max: 20.0
         description:
@@ -726,9 +726,9 @@ parameters:
 
       FV_REL_POS_Y:
         type: float
-        default: -0.404
+        default: -0.3936
         unit: m
-        decimal: 6
+        decimal: 4
         min: -20.0
         max: 20.0
         description:
@@ -738,9 +738,9 @@ parameters:
 
       FV_REL_POS_Z:
         type: float
-        default: 0.0682
+        default: 0.1089
         unit: m
-        decimal: 6
+        decimal: 4
         min: -20.0
         max: 20.0
         description:
