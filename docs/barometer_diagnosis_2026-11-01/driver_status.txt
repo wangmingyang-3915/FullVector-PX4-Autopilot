@@ -1,0 +1,65 @@
+HEARTBEAT {'mavpackettype': 'HEARTBEAT', 'type': 2, 'autopilot': 12, 'base_mode': 81, 'custom_mode': 458752, 'system_status': 3, 'mavlink_version': 3}
+
+COMMAND icp201xx status
+nsh: sysinit: fopen failed: No such file or directory
+
+NuttShell (NSH)
+nsh>
+nsh> icp201xx status
+INFO  [SPI_I2C] Running on I2C Bus 4, Address 0x64
+icp201xx: reset: 0 events
+icp201xx: read: 15029 events, 500949662us elapsed, 33332.20us avg, min 31570us max 35091us 778.698us rms
+icp201xx: bad transfer: 0 events
+INFO  [SPI_I2C] Running on I2C Bus 2, Address 0x63
+icp201xx: reset: 0 events
+icp201xx: read: 15030 events, 500982640us elapsed, 33332.18us avg, min 32432us max 34243us 673.584us rms
+icp201xx: bad transfer: 0 events
+nsh>
+COMMAND i2c help
+i2c help
+nsh: i2c: command not found
+nsh>
+COMMAND listener vehicle_status
+listener vehicle_status
+
+TOPIC: vehicle_status
+ vehicle_status
+    timestamp: 976383489 (0.381463 seconds ago)
+    armed_time: 0
+    takeoff_time: 0
+    nav_state_timestamp: 1303064
+    failure_detector_status: 0
+    arming_state: 1
+    latest_arming_reason: 2
+    latest_disarming_reason: 2
+    nav_state_user_intention: 15
+    nav_state: 15
+    hil_state: 0
+    vehicle_type: 1
+    failsafe: False
+    failsafe_and_user_took_over: False
+    gcs_connection_lost: True
+    gcs_connection_lost_counter: 2
+    high_latency_data_link_lost: False
+    is_vtol: False
+    is_vtol_tailsitter: False
+    in_transition_mode: False
+    in_transition_to_fw: False
+    system_type: 2
+    system_id: 1
+    component_id: 1
+    safety_button_available: True
+    safety_off: True
+    power_input_valid: True
+    usb_connected: True
+    open_drone_id_system_present: False
+    open_drone_id_system_healthy: False
+    parachute_system_present: False
+    parachute_system_healthy: False
+    avoidance_system_required: False
+    avoidance_system_valid: False
+    rc_calibration_in_progress: False
+    calibration_enabled: False
+    pre_flight_checks_pass: False
+
+nsh>

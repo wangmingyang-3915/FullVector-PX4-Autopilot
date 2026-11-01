@@ -98,6 +98,8 @@ ICP201XX::probe()
 		return PX4_ERROR;
 	}
 
+	PX4_INFO("I2C bus %d address 0x%02x ASIC version 0x%02x", get_device_bus(), get_device_address(), ver);
+
 	return PX4_OK;
 }
 
@@ -145,6 +147,7 @@ ICP201XX::RunImpl()
 				/* B2 version Asic is detected. Boot up sequence is not required for B2 Asic, so returning */
 				_state = STATE::CONFIG;
 				ScheduleDelayed(10_ms);
+				break;
 			}
 
 			/* Read boot up status and avoid re running boot up sequence if it is already done */
