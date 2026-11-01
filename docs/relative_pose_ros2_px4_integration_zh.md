@@ -314,6 +314,12 @@ Agent 的动态库依赖已经检查，没有 `not found`。`jetson` 用户也�
 
 ### 10.1 刷写固件
 
+在仓库根目录编译 FMU-v6X 固件：
+
+```bash
+make px4_fmu-v6x_default
+```
+
 编译产物：
 
 ```text
@@ -327,6 +333,20 @@ make px4_fmu-v6x_default upload
 ```
 
 刷写属于改变真实飞控状态的操作，应在桨叶拆除、飞控可靠供电并确认参数已备份后进行。
+
+2026-11-01 已完成该目标的固件构建，生成的参数默认值已核对：偏航姿态外环 `FV_ATT_P_Z=4.0`、角速度内环 `FV_ANG_VEL_P_Z=0.30`。偏航内环 I=0.10、D=0，外环 I/D 均为 0。此次只生成固件，未执行刷写或运行时参数写入；新组合仍需复测验证。
+
+飞控中已保存的参数可能沿用旧值。应用本次偏航配置时，在 NSH 中执行并回读确认：
+
+```text
+param set FV_ATT_P_Z 4.0
+param set FV_ANG_VEL_P_Z 0.30
+param save
+param show FV_ATT_P_Z
+param show FV_ANG_VEL_P_Z
+```
+
+控制器说明见[姿态与角速度串级 PID](../src/modules/fullvector_control/FULLVECTOR_CONTROL.md#8-姿态与角速度串级-pid)，历史飞行证据和调参限制见[偏航日志分析](yaw_log_analysis/report.md)。
 
 ### 10.2 DDS Domain 必须一致
 

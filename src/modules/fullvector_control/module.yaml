@@ -297,7 +297,7 @@ parameters:
 
       FV_ATT_P_Z:
         type: float
-        default: 2.8
+        default: 4.0
         decimal: 3
         min: 0.0
         max: 5.0
@@ -405,7 +405,7 @@ parameters:
 
       FV_ANG_VEL_P_Z:
         type: float
-        default: 0.25
+        default: 0.30
         decimal: 3
         min: 0.0
         max: 0.6

@@ -467,6 +467,29 @@ alpha_sp = Kp_w .* e_w + Ki_w .* I_w + Kd_w .* d_e_w
 - yaw 杆释放沿只清理一次旧控制残留，之后允许角速度积分持续补偿静态偏航力矩；
 - yaw 角加速度限制为 ±4 rad/s²。
 
+### 8.4 当前偏航参数默认值与日志验证
+
+2026-11-01 更新后的偏航串级 PID 默认值如下，参数定义以 `module.yaml` 为准：
+
+| 控制环 | P | I | D |
+|---|---:|---:|---:|
+| 姿态外环 `FV_ATT_[P/I/D]_Z` | 4.0 | 0.0 | 0.0 |
+| 角速度内环 `FV_ANG_VEL_[P/I/D]_Z` | 0.30 | 0.10 | 0.0 |
+
+此次只调整偏航外环和内环的 P，电机/公共倾转分配权重 `FV_YAW_MIX_WT=0.5`、积分保护和输出限幅保持原有实现。手动模式下，当前内环 I 项最多贡献 `0.10 × 0.3 = 0.03 rad/s²`。
+
+两份飞行日志分别使用外环 P=2.8、4.0，内环 P 均为 0.25，均存在持续目标角速度明显大于实际角速度的片段。此次选定外环 P=4.0、内环 P=0.30 作为下一轮验证配置；该组合已通过 FMU-v6X 固件编译，尚未由这两份历史日志验证。统计、响应曲线和复现方法见[偏航日志分析](../../../docs/yaw_log_analysis/report.md)。
+
+固件默认值不会自动覆盖飞控中已保存的参数。刷写后应读取 `FV_ATT_P_Z`、`FV_ANG_VEL_P_Z` 的实际值；如需应用本配置，在 NSH 中执行：
+
+```text
+param set FV_ATT_P_Z 4.0
+param set FV_ANG_VEL_P_Z 0.30
+param save
+param show FV_ATT_P_Z
+param show FV_ANG_VEL_P_Z
+```
+
 ## 9. 电机转速和倾转角算法
 
 `calculateMotorCommand()` 将 `_pos_acc_cmd` 和 `_att_ang_acc_cmd` 转换成四路电机角速度和四路舵机倾转角。
