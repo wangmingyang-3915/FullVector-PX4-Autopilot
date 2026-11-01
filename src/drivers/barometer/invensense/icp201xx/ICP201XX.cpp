@@ -275,22 +275,26 @@ ICP201XX::RunImpl()
 			* Therefore the first 14 pressure output values are discarded.
 			**/
 			uint8_t fifo_packets = 0;
-			uint8_t fifo_packets_to_skip = 14;
+			static constexpr uint8_t fifo_packets_to_skip = 14;
 
-			do {
+			if (read_reg(Register::FIFO_FILL, &fifo_packets) != PX4_OK) {
+				perf_count(_bad_transfer_perf);
 				ScheduleDelayed(10_ms);
-				read_reg(Register::FIFO_FILL, &fifo_packets);
-				fifo_packets = (uint8_t)(fifo_packets & 0x1F);
-			} while (fifo_packets >= fifo_packets_to_skip);
+				break;
+			}
 
-			flush_fifo();
-			fifo_packets = 0;
-
-			do {
+			// Wait across work queue runs: ScheduleDelayed() does not sleep here.
+			// Do not publish the FIR settling samples used to initialize EKF height.
+			if ((fifo_packets & 0x1F) < fifo_packets_to_skip) {
 				ScheduleDelayed(10_ms);
-				read_reg(Register::FIFO_FILL, &fifo_packets);
-				fifo_packets = (uint8_t)(fifo_packets & 0x1F);
-			} while (fifo_packets == 0);
+				break;
+			}
+
+			if (!flush_fifo()) {
+				perf_count(_bad_transfer_perf);
+				ScheduleDelayed(10_ms);
+				break;
+			}
 
 			_state = STATE::READ;
 			perf_begin(_sample_perf);
