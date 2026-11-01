@@ -88,6 +88,8 @@ bool FullvectorControl::init()
 // 清理位置与速度控制历史。
 void FullvectorControl::resetPositionPidState()
 {
+	_posctl_altitude_hold.reset();
+
 	// 清零位置环与速度环历史。
 	_pos_error_int.zero();
 	_vel_error_int.zero();
@@ -1120,6 +1122,30 @@ void FullvectorControl::Run()
 		} else if (PX4_ISFINITE(_trajectory_setpoint.yaw)) {
 			yaw_sp_target = matrix::wrap_pi(_trajectory_setpoint.yaw);
 		}
+	}
+
+	// POSCTL 回中后先跟随 FlightTask 垂直制动轨迹，制动完成后保持终点高度。
+	// 主动读取手动输入，避免 RC 控制权切换功能关闭时输入停止更新。
+	_manual_control_setpoint_sub.update(&_manual_control_setpoint);
+	const bool altitude_hold_enabled = posctl_mode && trajectory_valid
+					   && _manual_control_setpoint.valid
+					   && (_manual_control_setpoint.timestamp != 0)
+					   && (hrt_elapsed_time(&_manual_control_setpoint.timestamp) < 500_ms)
+					   && _position.z_valid && _position.v_z_valid
+					   && (_position_state_age_level == 0);
+
+	const PosctlAltitudeHold::Trajectory vertical_trajectory {
+		_trajectory_setpoint.position[2],
+		_trajectory_setpoint.velocity[2],
+		_trajectory_setpoint.acceleration[2]
+	};
+
+	if (_posctl_altitude_hold.update(altitude_hold_enabled, _manual_control_setpoint.throttle,
+					 _param_mpc_hold_dz.get(), state_for_control.position(2),
+					 _position.z_reset_counter, _position.delta_z, vertical_trajectory)) {
+		_current_command.position(2) = _posctl_altitude_hold.position();
+		_current_command.velocity(2) = 0.0f;
+		_current_command.acceleration(2) = 0.0f;
 	}
 
 	// 平移由电机倾转完成，机体目标保持水平。

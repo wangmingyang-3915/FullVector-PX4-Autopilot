@@ -6,6 +6,7 @@ px4_add_module(
 		fullvector_control.cpp
 		fullvector_control.hpp
 		RelativePoseStateMachine.hpp
+		PosctlAltitudeHold.hpp
 	MODULE_CONFIG
 		module.yaml
 	DEPENDS
@@ -17,3 +18,5 @@ px4_add_module(
 	)
 
 px4_add_unit_gtest(SRC RelativePoseStateMachineTest.cpp)
+
+px4_add_unit_gtest(SRC PosctlAltitudeHoldTest.cpp)

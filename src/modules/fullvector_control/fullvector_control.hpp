@@ -42,6 +42,7 @@
 #pragma once
 
 #include "RelativePoseStateMachine.hpp"
+#include "PosctlAltitudeHold.hpp"
 
 #include <drivers/drv_hrt.h>
 #include <lib/perf/perf_counter.h>
@@ -223,6 +224,7 @@ private:
 		(ParamFloat<px4::params::FV_ACC_UP_MAX>)          _param_fv_acc_up_max,
 		(ParamFloat<px4::params::FV_ACC_DOWN_MAX>)        _param_fv_acc_down_max,
 		(ParamFloat<px4::params::FV_JERK_MAX>)            _param_fv_jerk_max,
+		(ParamFloat<px4::params::MPC_HOLD_DZ>)            _param_mpc_hold_dz,
 		(ParamFloat<px4::params::FV_ATT_P_X>)             _param_fv_att_p_x,
 		(ParamFloat<px4::params::FV_ATT_P_Y>)             _param_fv_att_p_y,
 		(ParamFloat<px4::params::FV_ATT_P_Z>)             _param_fv_att_p_z,
@@ -351,7 +353,8 @@ private:
 	bool _actuator_saturated{false};
 	uint32_t _selected_accel_device_id{0};
 	uint32_t _selected_gyro_device_id{0};
-	// POSCTL 航向目标。
+	// POSCTL 油门中位高度保持与航向目标。
+	PosctlAltitudeHold _posctl_altitude_hold;
 	float _posctl_yaw_sp{0.0f};
 	bool _posctl_yaw_sp_initialized{false};
 	// STAB 航向目标。

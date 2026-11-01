@@ -187,6 +187,51 @@ POSCTL 使用 `trajectory_setpoint`，该目标通常由 PX4 `FlightModeManager`
 - 有限位置值：该轴启用位置外环；
 - 位置为 `NaN`：该轴解除位置锁定，只跟踪速度和加速度目标。
 
+油门回中后，fullvector 先跟随原生垂直制动轨迹，再在垂直目标层显式保持高度：
+
+- 使用校准后 `manual_control_setpoint.throttle` 的 `[-1, 1]` 输入，0 表示中位；中位死区复用 `MPC_HOLD_DZ`（默认 0.10）。
+- 进入死区时继续使用 `trajectory_setpoint` 的垂直位置、速度和加速度，包括制动阶段的 `NaN` 位置目标，不立即锁定回中时的高度。
+- 当轨迹提供有限 Z 目标、垂直速度幅值不超过 0.01 m/s 且垂直加速度幅值不超过 0.01 m/s² 时，判定轨迹基本停止；锁定此时的轨迹 Z 目标，垂直速度与加速度前馈置 0。该判据表示目标轨迹停止，不代表实测速度已精确为零；剩余误差由原有位置/速度环消除，原有加速度与 jerk 限制继续生效。
+- 离开死区后释放高度锁定，恢复 `trajectory_setpoint` 的原有升降目标，再回中时重新经过制动、保持过程。
+- 单次 EKF 高度重置时，目标同步加上 `delta_z`，保持高度误差连续；漏过多次重置时重新捕获当前高度。
+- 手动输入无效或超过 500 ms、轨迹过期或垂直目标非有限、垂直状态无效或位置状态老化时释放此锁定，继续原有轨迹/状态保护流程；退出 POSCTL 或控制器重置时也释放。
+
+中位表示保持高度的指令，不要求电机固定输出 50%。`FV_HOVER_THR` 仍是动力输出标定参数。本修改只影响 POSCTL 垂直目标，不调整 PID 增益或 STAB/OFFBOARD 的目标生成。
+
+油门相关信号应分别理解：
+
+| 信号或参数 | 范围 / 默认值 | 定点模式含义 |
+|---|---|---|
+| `manual_control_setpoint.throttle` | `[-1, 1]`，中位为 0 | 校准后的油门杆输入；不是电机推力 |
+| `MPC_HOLD_DZ` | 默认 0.10 | 输入绝对值不超过该值时请求制动后保持高度；同时用于原生摇杆处理 |
+| `trajectory_setpoint.velocity[2]` / `acceleration[2]` | NED，m/s / m/s² | FlightTask 生成的垂直速度和加速度前馈，制动期间继续跟踪 |
+| `vehicle_local_position_setpoint.vz` | NED，m/s | fullvector 位置环修正后的垂直速度目标，保持高度时可非零 |
+| `FV_HOVER_THR` | 默认 0.5 | 模型悬停转速对应的电机归一化输出标定，不是摇杆中位 |
+| `actuator_motors.control[0..3]` | `[0, 1]` | 电机归一化推力指令，由闭环与分配器调整，悬停时不应为零 |
+
+切模和操作时序：
+
+1. 油门在中位切入 POSCTL，若轨迹仍在制动，则跟随该轨迹；若轨迹已停止，则直接保持其 Z 目标。
+2. 上推或下拉油门时，继续使用原有升降轨迹；回中后先减速，再保持轨迹终点，不返回回中瞬间的实测高度。
+3. 制动或保持期间再次打杆，立即释放附加高度锁定，交回原有轨迹指令；再回中时重复上述流程。
+4. 实际位置和速度仍可能有跟踪误差，代码不保证回中后瞬间静止，也不能消除高度估计漂移。遥控器物理中位是否对应输入 0，需要检查设备校准。
+
+可在 NSH 查看输入、轨迹和闭环状态：
+
+```text
+param show MPC_HOLD_DZ
+param show FV_HOVER_THR
+listener manual_control_setpoint 5
+listener trajectory_setpoint 5
+listener vehicle_local_position_setpoint 5
+listener vehicle_local_position 5
+listener fullvector_control_status 5
+```
+
+验证时区分 `trajectory_setpoint` 的前馈与位置环修正后的速度目标：油门回中后，检查轨迹速度与加速度是否逐步归零、Z 目标是否稳定，再检查实测垂直速度和高度误差。`vehicle_local_position_setpoint.vz` 为消除高度误差而暂时非零是正常闭环行为。ULog 中同时记录飞行模式和 `fullvector_active`，避免把 Offboard、原生控制器或失效保护片段当作本功能结果。
+
+本功能由 [PosctlAltitudeHold.hpp](PosctlAltitudeHold.hpp) 管理目标锁定，在 [fullvector_control.cpp](fullvector_control.cpp) 的 POSCTL 目标处理处接入。对应 [PosctlAltitudeHoldTest.cpp](PosctlAltitudeHoldTest.cpp) 的 9 项单元测试覆盖制动完成判定、终点捕获、重新打杆、输入/轨迹无效、控制器重置和 EKF 高度重置（含计数回绕）。已通过 CUAV FMU-v6X 控制模块编译；这些检查不能代替实飞验证，尚未据此刷写设备或验证悬停效果。
+
 进入 POSCTL 时捕获当前 yaw 作为初始航向目标：
 
 - yaw 杆有效时，使用 `trajectory_setpoint.yawspeed` 进行角速度控制，并让角度目标跟随当前航向，避免航向环反向拉回；
