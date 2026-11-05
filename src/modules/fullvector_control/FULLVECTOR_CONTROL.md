@@ -230,7 +230,7 @@ listener fullvector_control_status 5
 
 验证时区分 `trajectory_setpoint` 的前馈与位置环修正后的速度目标：油门回中后，检查轨迹速度与加速度是否逐步归零、Z 目标是否稳定，再检查实测垂直速度和高度误差。`vehicle_local_position_setpoint.vz` 为消除高度误差而暂时非零是正常闭环行为。ULog 中同时记录飞行模式和 `fullvector_active`，避免把 Offboard、原生控制器或失效保护片段当作本功能结果。
 
-本功能由 [PosctlAltitudeHold.hpp](PosctlAltitudeHold.hpp) 管理目标锁定，在 [fullvector_control.cpp](fullvector_control.cpp) 的 POSCTL 目标处理处接入。对应 [PosctlAltitudeHoldTest.cpp](PosctlAltitudeHoldTest.cpp) 的 9 项单元测试覆盖制动完成判定、终点捕获、重新打杆、输入/轨迹无效、控制器重置和 EKF 高度重置（含计数回绕）。已通过 CUAV FMU-v6X 控制模块编译；这些检查不能代替实飞验证，尚未据此刷写设备或验证悬停效果。
+本功能由 [PosctlAltitudeHold.hpp](PosctlAltitudeHold.hpp) 管理目标锁定，在 [fullvector_control.cpp](fullvector_control.cpp) 的 POSCTL 目标处理处接入。对应 [PosctlAltitudeHoldTest.cpp](PosctlAltitudeHoldTest.cpp) 的 9 项单元测试覆盖制动完成判定、终点捕获、重新打杆、输入/轨迹无效、控制器重置和 EKF 高度重置（含计数回绕）。2026-11-05 已通过 `px4_fmu-v6x_default` 完整固件编译；这些检查不能代替实飞验证，尚未据此刷写设备或验证悬停效果。
 
 进入 POSCTL 时捕获当前 yaw 作为初始航向目标：
 
@@ -268,12 +268,19 @@ TF 样本年龄由机载桥接端按原始采样时间检查并写入有效标�
 | `Idle` | 尚未捕获有效目标，或者不再拥有 OFFBOARD 控制权 |
 | `Tracking` | 正在使用相对位姿；此时 `_relative_pose_active=true` |
 | `LossHold` | 已经跟踪过目标，但当前输入失效，保持丢失瞬间的 NED 位置和 yaw |
-| `Aborted` | 丢失保持超过 `FV_REL_HOLD_T`，锁存中止并请求 POSCTL |
+| `Aborted` | 丢失保持超过 `FV_REL_HOLD_T`，锁存中止；按状态可用性请求 POSCTL、ALTCTL 或 STAB |
 
 视觉有效性必须连续保持 `FV_REL_DBNC_T`（默认 0.08 s），状态机才会完成 `Idle → Tracking`、
 `Tracking → LossHold` 或 `LossHold → Tracking` 切换。Tracking 中短于该时间的无效输入继续使用最后一份
 已接受位姿，因此 60 Hz 视觉链路中的单帧异常不会切换控制误差源。进入 LossHold 后，丢失持续时间仍从
-首个连续无效时刻计算，不会因为迟滞而延后最长保持期限。
+首个连续无效时刻计算，不会因为迟滞而延后最长保持期限。姿态一致性拒绝位 128 是例外，Tracking 会立即进入 LossHold。
+
+2026-11-05 增加固定目标姿态一致性检查：在会话首个有效输入建立
+`R_NED,target = R_NED,body · R_target,body^T` 基准，随后与该基准比较完整旋转。
+`FV_REL_IMU_G` 默认为 0.35 rad，另允许最多 0.2 rad 的图像延迟旋转余量；
+EKF 姿态重置同步补偿基准。超限样本以拒绝位 128 标记，并立即从 Tracking 进入 LossHold，
+恢复仍需正常有效性迟滞。该检查针对姿态固定的目标，目标需主动转动时设为 0；
+它不能识别会话首帧已有的固定标定偏差，不能代替外参验收。
 
 位置环和姿态环只读取 `_relative_pose_active`，不再分别根据模式、输入有效性或超时标志重复推导。
 `Aborted` 即使重新收到有效视觉数据也不会恢复 `Tracking`；退出 OFFBOARD 或通过 RC 交还控制权后，
@@ -288,9 +295,9 @@ p_rel,sp = [FV_REL_POS_X, FV_REL_POS_Y, FV_REL_POS_Z]^T
 2026-10-27 安装补偿后，默认对接位置为 `[0.0438, -0.3936, 0.1089] m`，
 位置参数显示四位小数；相对姿态目标 `FV_REL_ROLL/PITCH/YAW` 均为 0 rad。
 这些位置已转换到校正后的目标机坐标轴，不能与校正前外参混用。
-本次已在线写入并回读飞控参数，现场归零残差验证按用户要求跳过。
+2026-10-27 已在线写入并回读飞控参数，当次未完成校正后的现场归零残差复验；本次保护补丁没有向实机写入标定参数。
 测量、外参公式与两侧部署对应关系见
-[2026-10-27 对接校正记录](../../../docs/docking_calibration_2026-10-27_zh.md)。
+[部署维护手册中的对接标定](../../../docs/README.md#33-2026-10-27-的标定依据与边界)。
 
 输入的相对位置和目标都位于目标机 body FRD 坐标系。首先计算目标机坐标系中的误差：
 
@@ -328,7 +335,13 @@ R_NED,target = R(state.attitude) · R(relative_attitude)^T
 2. 清除位置和姿态外环积分，同步外环及内环微分历史；速度与角速度内环积分继续保留；
 3. 位置、速度和加速度目标分别设为捕获位置、0、0；
 4. roll、pitch 设为 0，yaw 保持丢失瞬间的航向；
-5. 退出 Tracking 后不再使用对接专用速度、加速度和 jerk 限幅，继续使用普通位置保持链路。
+5. 退出 Tracking 后平移恢复普通位置保持限制；整个对接会话的偏航保护继续生效。
+
+位置/速度显式无效或非有限时立即停止使用旧平移状态，不再等待旧消息老化 500 ms。
+POSCTL/OFFBOARD 位置失效，以及对接保持超时中止时，每 500 ms 至多请求一次可用回退模式：
+本地位置可用时为 POSCTL，仅高度可用时为 ALTCTL，否则为 STAB。交权到原生模式时倾转舵机回中。
+估计位置/速度重置和无效后的恢复会同步 PID 微分历史；LossHold 的保持位置在坐标重置时重新捕获，
+POSCTL 原有高度锁定继续由 `PosctlAltitudeHold` 补偿 Z 重置。EKF 航向重置同步调整各内部锁定航向目标。
 
 离开 OFFBOARD 或 fullvector 交还控制权后，相对位姿会话、运动学门控基准和丢失保持状态被统一清除。
 
@@ -512,6 +525,14 @@ alpha_sp = Kp_w .* e_w + Ki_w .* I_w + Kd_w .* d_e_w
 - yaw 杆释放沿只清理一次旧控制残留，之后允许角速度积分持续补偿静态偏航力矩；
 - yaw 角加速度限制为 ±4 rad/s²。
 
+对接 Tracking、LossHold 和 Aborted 等待退出期间另有独立保护：
+
+- `FV_DOCK_YR_MAX=0.5 rad/s`：yaw 角速度目标上限；
+- `FV_DOCK_YA_MAX=1.0 rad/s²`：目标变化率与内环角加速度指令上限；
+- 首拍从实测角速度接入，且 yaw 角速度积分同样限制为 ±0.3。
+
+这两个上限不改变 POSCTL/STAB 的手动控制，也不改变四层 PID 增益和控制分配。
+
 ### 8.4 当前偏航参数默认值与日志验证
 
 2026-11-01 更新后的偏航串级 PID 默认值如下，参数定义以 `module.yaml` 为准：
@@ -523,7 +544,7 @@ alpha_sp = Kp_w .* e_w + Ki_w .* I_w + Kd_w .* d_e_w
 
 此次只调整偏航外环和内环的 P，电机/公共倾转分配权重 `FV_YAW_MIX_WT=0.5`、积分保护和输出限幅保持原有实现。手动模式下，当前内环 I 项最多贡献 `0.10 × 0.3 = 0.03 rad/s²`。
 
-两份飞行日志分别使用外环 P=2.8、4.0，内环 P 均为 0.25，均存在持续目标角速度明显大于实际角速度的片段。此次选定外环 P=4.0、内环 P=0.30 作为下一轮验证配置；该组合已通过 FMU-v6X 固件编译，尚未由这两份历史日志验证。统计、响应曲线和复现方法见[偏航日志分析](../../../docs/yaw_log_analysis/report.md)。
+两份历史飞行日志分别使用外环 P=2.8、4.0，内环 P 均为 0.25，均存在持续目标角速度明显大于实际角速度的片段。此次选定外环 P=4.0、内环 P=0.30 作为下一轮验证配置；该组合已通过 FMU-v6X 固件编译，尚未由这两份历史日志验证。结论摘要见[部署维护手册中的偏航响应](../../../docs/README.md#81-偏航响应)；历史资料是否保留不影响本次补丁的验证边界。
 
 固件默认值不会自动覆盖飞控中已保存的参数。刷写后应读取 `FV_ATT_P_Z`、`FV_ANG_VEL_P_Z` 的实际值；如需应用本配置，在 NSH 中执行：
 
@@ -714,7 +735,7 @@ r_dot = [tau_z + p·q·(Ixx-Iyy)] / Izz
 
 - 姿态或角速度等级 2：冻结 PID，重发上一拍有效电机和舵机命令；没有缓存时发布安全输出；
 - 姿态或角速度等级 3：电机归零、舵机回中，重置所有 PID；
-- POSCTL/OFFBOARD 的位置或速度等级不小于 2：跳过位置环，清除位置 PID，令 `_pos_acc_cmd = 0`，但继续运行姿态环和悬停推力计算；
+- POSCTL/OFFBOARD 的位置或速度等级不小于 2：跳过位置环，清除位置 PID，令 `_pos_acc_cmd = 0`，但继续运行姿态环和悬停推力计算，同时每 500 ms 至多请求一次可用回退模式；显式无效或非有限状态立即进入该保护，不等待消息老化；
 - STAB 不检查位置和速度，只检查姿态与角速度；
 - 模式切换、参数变化、控制器重新接管和长周期调度都会重置相应 PID 状态。
 
@@ -789,11 +810,14 @@ RC 请求切回 PX4 原生控制器时，只发布四路倾转舵机中位命令
 - `FV_DOCK_VX_MAX`、`FV_DOCK_VY_MAX`：对接 Tracking 状态下的 NED X/Y 期望速度上限，默认 0.5 m/s；
 - `FV_DOCK_ACC_MAX`：对接 Tracking 状态下的 NED 水平加速度向量上限，默认 1.0 m/s²；
 - `FV_DOCK_JERK_MAX`：对接 Tracking 状态下的水平/垂直加速度变化率上限，默认 2.0 m/s³；
+- `FV_DOCK_YR_MAX`：对接会话 yaw 角速度目标上限，默认 0.5 rad/s；
+- `FV_DOCK_YA_MAX`：对接会话 yaw 目标变化率和内环角加速度指令上限，默认 1.0 rad/s²；
+- `FV_REL_IMU_G`：固定目标完整姿态一致性门限，默认 0.35 rad，0 禁用；
 - `FV_REL_ATT_MODE`：相对姿态误差源，默认 0 表示 IMU roll/pitch 加视觉相对 yaw；
 - `FV_REL_ROLL/PITCH/YAW`：期望相对姿态，其中 roll/pitch 仅在模式 1 生效；
 - `FV_REL_LOSS_T`：相对位姿超时时间，默认 0.25 s；
 - `FV_REL_DBNC_T`：视觉有效/无效状态切换迟滞，默认 0.08 s；
-- `FV_REL_HOLD_T`：目标丢失后的最长 NED 位置/航向保持时间，超时请求 POSCTL；
+- `FV_REL_HOLD_T`：目标丢失后的最长 NED 位置/航向保持时间，超时按状态可用性请求 POSCTL、ALTCTL 或 STAB；
 - `FV_REL_POS_JMP`、`FV_REL_VEL_G`：相对位置基础跳变和随接收间隔扩展的速度门控；
 - `FV_REL_ANG_JMP`、`FV_REL_RATE_G`：相对姿态基础跳变和角速度门控；
 
@@ -813,8 +837,16 @@ RC 请求切回 PX4 原生控制器时，只发布四路倾转舵机中位命令
 - 水平加速度转换到机体系时只使用当前 yaw；
 - `controlAllocation()` 的一步动力学积分不会修正估计器状态；
 - STAB 的最大姿态、最大 yaw rate 和最大水平加速度目前是代码内常量，不是 PX4 参数；
-- 相对位姿分支假设目标机速度和加速度为零，没有使用目标机运动前馈；
+- 相对位姿分支假设目标机速度和加速度为零，没有使用目标机运动前馈；默认姿态一致性检查还要求目标姿态固定，目标需要主动转动时应将 `FV_REL_IMU_G` 设为 0；
 - PID 微分直接对误差做差分，未单独配置低通滤波器，因此状态噪声、视觉延迟和 `dt` 抖动会直接影响微分项；
 - 电机归一化建立在 `T ∝ omega^2` 和 `FV_HOVER_THR` 标定准确的前提下，实机需要确保 `K_F`、质量、PWM 推力曲线和悬停油门一致。
 
 这些边界是后续升级为几何姿态控制、带约束优化分配或目标运动前馈时需要重点考虑的部分。
+
+## 15. 2026-11-05 保护补丁验证
+
+保留四层 PID、增益和执行器分配；新增行为是异常输入拒绝、模式回退、EKF 重置补偿和对接 yaw 指令限幅/平滑接入，正常对接的偏航响应也会受限。
+
+21 项主机测试通过：`DockingSafetyTest.cpp` 5 项、`PosctlAltitudeHoldTest.cpp` 9 项、`RelativePoseStateMachineTest.cpp` 7 项；完整 `px4_fmu-v6x_default` 固件构建通过。新增拒绝原因常量 128 已同步到 `msg/FullvectorControlStatus.msg` 与 `Tools/ros2/px4_msgs/msg/FullvectorControlStatus.msg`，字段布局不变。
+
+GPS/EKF 质量检查参数未修改。保护补丁不能修复 GNSS 接收质量或视觉外参，未刷写实机、未完成新固件闭环实飞验证。主机测试复现、GPS 融合排查和组件日志回放边界见[部署维护手册](../../../docs/README.md#73-gps-有定位但-ekf-不融合)。

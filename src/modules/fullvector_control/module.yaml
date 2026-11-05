@@ -800,6 +800,46 @@ parameters:
             相对位姿对接激活时，限制水平加速度向量和 NED 垂直加速度的每周期变化量。
             该参数不影响 POSCTL 或非对接 OFFBOARD。
 
+      FV_DOCK_YR_MAX:
+        type: float
+        default: 0.5
+        unit: rad/s
+        decimal: 2
+        min: 0.0
+        max: 2.0
+        description:
+          short: 对接会话偏航角速度上限
+          long: |
+            限制 Tracking、LossHold 和中止等待期间的 yaw 角速度目标。
+            从当前实测角速度平滑接入，不影响 POSCTL 或 STAB。
+
+      FV_DOCK_YA_MAX:
+        type: float
+        default: 1.0
+        unit: rad/s^2
+        decimal: 2
+        min: 0.0
+        max: 4.0
+        description:
+          short: 对接会话偏航角加速度上限
+          long: |
+            同时限制对接会话 yaw 角速度目标的变化率和角速度内环角加速度输出。
+
+      FV_REL_IMU_G:
+        type: float
+        default: 0.35
+        unit: rad
+        decimal: 2
+        min: 0.0
+        max: 1.57
+        description:
+          short: 固定对接目标姿态一致性门限
+          long: |
+            在会话首个有效位姿建立目标 NED 姿态基准，比较 IMU 与视觉相对旋转推算的目标姿态。
+            额外允许最多 0.2 rad 的有界图像延迟旋转余量；EKF 姿态重置同步补偿基准。
+            超限样本拒绝并立即进入失联保持，防止连续小误差累计驱动大幅偏航。
+            适用于姿态固定的对接目标；目标需要主动转动时设为 0 禁用该检查。
+
       FV_REL_LOSS_T:
         type: float
         default: 0.25
@@ -825,6 +865,7 @@ parameters:
           short: 对接视觉状态切换迟滞时间
           long: |
             视觉有效性连续保持该时间后，才允许在 Tracking 与 LossHold 之间切换。
+            姿态一致性检查超限时立即从 Tracking 进入 LossHold，不等待该迟滞。
             默认 0.08 秒可过滤约 60 Hz 输入中的单帧和短时抖动；设为 0 可恢复立即切换行为。
             丢失保持超时仍从首个连续无效时刻开始计算。
 
@@ -839,7 +880,8 @@ parameters:
           short: 对接目标丢失最长保持时间
           long: |
             对接会话中目标丢失后，允许保持丢失瞬间 NED 位置和航向的最长时间。
-            超时后锁存本次对接中止并请求切回 POSCTL；离开 OFFBOARD 或交还 fullvector 控制权后，
+            超时后锁存本次对接中止，按本地状态可用性请求 POSCTL、ALTCTL 或 STAB；
+            离开 OFFBOARD 或交还 fullvector 控制权后，
             状态机复位并允许重新开始对接。
 
       FV_REL_POS_JMP:

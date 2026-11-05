@@ -43,6 +43,7 @@
 
 #include "RelativePoseStateMachine.hpp"
 #include "PosctlAltitudeHold.hpp"
+#include "DockingSafety.hpp"
 
 #include <drivers/drv_hrt.h>
 #include <lib/perf/perf_counter.h>
@@ -190,6 +191,9 @@ private:
 		(ParamFloat<px4::params::FV_DOCK_VY_MAX>) _param_fv_dock_vy_max,
 		(ParamFloat<px4::params::FV_DOCK_ACC_MAX>) _param_fv_dock_acc_max,
 		(ParamFloat<px4::params::FV_DOCK_JERK_MAX>) _param_fv_dock_jerk_max,
+		(ParamFloat<px4::params::FV_DOCK_YR_MAX>) _param_fv_dock_yaw_rate_max,
+		(ParamFloat<px4::params::FV_DOCK_YA_MAX>) _param_fv_dock_yaw_accel_max,
+		(ParamFloat<px4::params::FV_REL_IMU_G>) _param_fv_rel_imu_gate,
 		(ParamFloat<px4::params::FV_REL_LOSS_T>) _param_fv_rel_loss_t,
 		(ParamFloat<px4::params::FV_REL_DBNC_T>) _param_fv_rel_debounce_t,
 		// 相对位姿最长保持和异常值门控。
@@ -268,7 +272,7 @@ private:
 	uORB::Publication<fullvector_control_diagnostics_s> _fullvector_control_diagnostics_pub{ORB_ID(fullvector_control_diagnostics)};
 	// control_allocator 根据该状态决定是否让出原生输出。
 	uORB::Publication<fullvector_control_status_s> _fullvector_control_status_pub{ORB_ID(fullvector_control_status)};
-	// 对接失联超时后请求 Commander 切回 POSCTL。
+	// 对接中止或位置失效时，请求 Commander 切换至可用回退模式。
 	uORB::Publication<vehicle_command_s> _vehicle_command_pub{ORB_ID(vehicle_command)};
 
 	// 控制器输入。
@@ -297,6 +301,8 @@ private:
 	bool _target_relative_pose_valid{false};
 	// 相对位姿状态机和当前周期唯一的相对控制判据。
 	RelativePoseStateMachine _relative_pose_state_machine{};
+	DockingAttitudeGuard _docking_attitude_guard;
+	DockingYawLimiter _docking_yaw_limiter;
 	bool _relative_pose_active{false};
 	bool _relative_pose_hold_initialized{false};
 	Quatf _relative_attitude{};

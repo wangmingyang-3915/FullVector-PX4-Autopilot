@@ -16,7 +16,7 @@ bool rc_switch_valid
 # 记录这个值是为了飞行日志里能直接看到拨杆位置和切换阈值的关系。
 float32 rc_switch_value
 
-# 相对位姿输入通过数值、时间戳和有效标志检查。
+# 相对位姿输入通过有效标志、数值、运动学和启用的姿态一致性检查，并且接收未超时。
 bool relative_pose_valid
 
 # 当前周期的位置环和姿态环正在使用相对位姿。
@@ -25,7 +25,7 @@ bool relative_pose_active
 # 对接过程中目标丢失，控制器正在保持丢失瞬间的 NED 位置和航向。
 bool relative_pose_loss_hold
 
-# 对接目标丢失超过最长保持时间，已请求回退 POSCTL；在模式切换完成前仍输出最后安全保持目标。
+# 对接目标丢失超过最长保持时间，已按状态可用性请求回退 POSCTL/ALTCTL/STAB。
 bool relative_pose_hold_timed_out
 
 # 当前目标及其视觉样本时间，便于在 ULog 中计算链路延迟。
@@ -51,6 +51,7 @@ uint8 REL_POSE_REJECT_POSITION_JUMP = 8
 uint8 REL_POSE_REJECT_ATTITUDE_JUMP = 16
 uint8 REL_POSE_REJECT_TARGET_CHANGE = 32
 uint8 REL_POSE_REJECT_RX_TIMEOUT = 64
+uint8 REL_POSE_REJECT_IMU_INCONSISTENT = 128
 # 最近一次拒绝原因和累计拒绝次数。
 uint8 relative_pose_reject_reason
 uint32 relative_pose_reject_count
